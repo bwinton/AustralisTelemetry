@@ -1,0 +1,15 @@
+*.pyc
+*.gz
+*.bz2
+*.xz
+*.lzma
+*.swp
+*.swo
+*.out
+*.o
+*~
+.idea/
+histogram_cache/
+node_modules/
+histogram_tools.py
+.DS_Store

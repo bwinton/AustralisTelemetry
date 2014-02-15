@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  CloudFormation template for telemetry-analysis worker setup, this stack
+  outputs a queue to which analysis tasks can be submitted. Pool of spot workers
+  will automatically scale to do the work.
+
+
+################################################################################
+
+Parameters:
+
+  instanceType:
+    Description:              Worker instance type
+    Type:                     String
+    Default:                  m1.xlarge
+    AllowedValues:
+      - m1.small
+      - m1.medium
+      - m1.large
+      - m1.xlarge
+      - m2.xlarge
+      - m2.2xlarge
+      - m2.4xlarge
+      - c1.medium
+      - c1.xlarge
+    ConstraintDescription:    must be a valid EC2 instance type.
+
+  #REMARK: We should consider removing keyName as it shouldn't be possible to
+  #        ssh in to the worker instances
+  keyName:
+    Description:              Name of key pair for SSH
+    Type:                     String
+    Default:                  jonasfj
+
+  spotPrice:
+    Description:              Spot price for workers
+    Type:                     String
+    Default:                  0.2
+
+  maxWorkers:
+    Description:              Maximum number of workers
+    Type:                     String
+    Default:                  50
+
+  imageId:
+    Description:              Image id of AMI to use
+    Type:                     String
+    Default:                  'ami-c2f194f2'
+
+
+################################################################################
+
+Resources:
+
+  # Input queue to which analysis tasks should be posted
+  telemetryAnalysisInput:
+    Type:                               AWS::SQS::Queue
+    Properties:
+      DelaySeconds:                     15
+      MessageRetentionPeriod:           345600
+      ReceiveMessageWaitTimeSeconds:    20
+      VisibilityTimeout:                1800
+
+  # Security group for workers, this should only allow for access to SQS and S3
+  workerSecurityGroup:
+    Type:                     AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:       telemetry-analysis worker security group
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0}
+
+  # IAM role for analysis workers
+  workerIAMRole:
+    Type:                     AWS::IAM::Role
+    DependsOn:
+      - telemetryAnalysisInput
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect:           Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path:                   /telemetry/analysis/
+      Policies:
+        # Grant read access to telemetry-published-v1
+        - PolicyName:         telemetryPublishedAccess
+          PolicyDocument:
+            Statement:
+              - Effect:       Allow
+                Action:
+                  - 's3:GetObject'
+                Resource:
+                  - 'arn:aws:s3:::telemetry-published-v1/*'
+        - PolicyName:         inputQueueAccess
+          PolicyDocument:
+            Statement:
+              - Effect:       Allow
+                Action:
+                  - 'sqs:*'
+                Resource:     '*'
+        - PolicyName:         analysisBucketAccess
+          PolicyDocument:
+            Statement:
+              - Effect:       Allow
+                Action:
+                  - 's3:*'
+                Resource:
+                  - 'arn:aws:s3:::jonasfj-telemetry-analysis'
+                  - 'arn:aws:s3:::jonasfj-telemetry-analysis/*'
+
+  # IAM instance profile granting workerIAMRole to workers
+  workerInstanceProfile:
+    Type:                     AWS::IAM::InstanceProfile
+    DependsOn:
+      - workerIAMRole
+    Properties:
+      Path:                   /telemetry/analysis/
+      Roles:
+        - {Ref: workerIAMRole}
+
+  # Security group for service server, http and ssh (well, disable ssh later)
+  workerSecurityGroup:
+    Type:                     AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:       telemetry-analysis worker security group
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0}
+
+  # Worker launch configuration, decides how a worker is launched.
+  workerLaunchConfig:
+    Type:                     AWS::AutoScaling::LaunchConfiguration
+    DependsOn:
+      - workerInstanceProfile
+      - telemetryAnalysisInput
+      - workerSecurityGroup
+    Metadata:
+      Comment:                telemetry-analysis worker
+    Properties:
+      KeyName:                  {Ref: keyName}
+      SpotPrice:                {Ref: spotPrice}
+      ImageId:                  {Ref: imageId}
+      InstanceType:             {Ref: instanceType}
+      IamInstanceProfile:       {Ref: workerInstanceProfile}
+      SecurityGroups:
+        - {Ref: workerSecurityGroup}
+      UserData:       {'Fn::Base64': {'Fn::Join': ['', [
+              "#!/bin/bash\n",
+              "echo '",
+                {'Fn::GetAtt': [telemetryAnalysisInput, QueueName]},
+                "' > /etc/telemetry-analysis-input-queue\n",
+              "mkdir /mnt/work\n",
+              "chown ubuntu /mnt/work\n",
+              "start telemetry-analysis\n"
+            ]
+          ]
+        }
+      }
+
+  # Auto scaling group for workers, this entity is modified by worker scaling
+  # polices, the scaling policies are activated by CloudWatch alarms.
+  workerAutoScaleGroup:
+    Type:                       AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - workerLaunchConfig
+    Properties:
+      AvailabilityZones:        {'Fn::GetAZs': ''}
+      LaunchConfigurationName:  {Ref: workerLaunchConfig}
+      MinSize:                  0
+      MaxSize:                  {Ref: maxWorkers}
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize:           10
+        MinInstancesInService:  0
+        PauseTime:              "PT0S"
+
+  # Scaling policies, these are sort of actions that can be executed by a
+  # CloudWatch alarm
+  workerScaleUpPolicy:
+    Type:                       AWS::AutoScaling::ScalingPolicy
+    DependsOn:
+      - workerAutoScaleGroup
+    Properties:
+      AdjustmentType:           ChangeInCapacity
+      AutoScalingGroupName:     {Ref: workerAutoScaleGroup}
+      Cooldown:                 60
+      ScalingAdjustment:        1
+
+  workerScaleDownPolicy:
+    Type:                       AWS::AutoScaling::ScalingPolicy
+    DependsOn:
+      - workerAutoScaleGroup
+    Properties:
+      AdjustmentType:           ChangeInCapacity
+      AutoScalingGroupName:     {Ref: workerAutoScaleGroup}
+      Cooldown:                 60
+      ScalingAdjustment:        -1
+
+
+  # CloudWatch alarms, these execute scaling policies
+  messagesAvailableAlarm:
+    Type:                       AWS::CloudWatch::Alarm
+    DependsOn:
+      - telemetryAnalysisInput
+      - workerScaleUpPolicy
+    Properties:
+      AlarmDescription:         Scale up if messages are available
+      Namespace:                AWS/SQS
+      MetricName:               ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name:     QueueName
+          Value:    {'Fn::GetAtt': [telemetryAnalysisInput, QueueName]}
+      Statistic:                Sum
+      Period:                   60
+      EvaluationPeriods:        5
+      Threshold:                0
+      ComparisonOperator:       GreaterThanThreshold
+      AlarmActions:
+        - {Ref: workerScaleUpPolicy}
+
+  notEnoughMessagesAlarm:
+    Type:                       AWS::CloudWatch::Alarm
+    DependsOn:
+      - telemetryAnalysisInput
+      - workerScaleDownPolicy
+    Properties:
+      AlarmDescription:         Scale down, if not enought messages
+      Namespace:                AWS/SQS
+      MetricName:               NumberOfEmptyReceives
+      Dimensions:
+        - Name:     QueueName
+          Value:    {'Fn::GetAtt': [telemetryAnalysisInput, QueueName]}
+      Statistic:                Sum
+      Period:                   60
+      EvaluationPeriods:        5
+      Threshold:                10
+      ComparisonOperator:       GreaterThanThreshold
+      AlarmActions:
+        - {Ref: workerScaleDownPolicy}
+
+################################################################################
+
+Outputs:
+
+  inputQueueMame:
+    Description:        SQS Queue name for input
+    Value:              {'Fn::GetAtt': [telemetryAnalysisInput, QueueName]}
