@@ -5,23 +5,19 @@ def map(k, d, v, cx):
   try:
     j = json.loads(v)
     if not "simpleMeasurements" in j:
-      cx.write("ERROR: MISSING SIMPLEMEASURES", 1)
       return
-    if not "UITelemetry" in k["simpleMeasurements"]:
-      cx.write("ERROR: MISSING UITELEMETRY", 1)
+    s = j["simpleMeasurements"]
+    if not "UITelemetry" in s:
       return
+    ui = s["UITelemetry"]
+    cx.write(k, json.dumps(ui))
 
-    uitelemetry = j['simpleMeasurements']['UITelemetry']
-    try:
-      ui = json.loads(uitelemetry)
-      cx.write(k, uitelemetry)
-    except:
-      cs.write("ERROR: JSON PARSE ERROR 2", 1)
-  except:
-    cx.write("ERROR: JSON PARSE ERROR", 1)
+  except Exception, e:
+    cx.write("JSON PARSE ERROR:", e)
 
 def reduce(k, v, cx):
-  if k.startswith("ERROR: "):
-    cx.write(k, sum(v))
+  if k == "JSON PARSE ERROR:":
+    for i in set(v):
+      cx.write(k, i)
     return
   cx.write(k, v)
