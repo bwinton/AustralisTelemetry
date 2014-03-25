@@ -42,12 +42,12 @@
 
   "Mappings": {
     "Region2WebServerAMI": {
-      "us-west-2": { "AMIpv": "ami-60b6d450" }
+      "us-west-2": { "AMIpv": "ami-00630d30" }
     },
     "Region2ProcessIncomingAMI": {
       "us-west-2": {
-        "AMIpv":  "ami-60b6d450",
-        "AMIhvm": "ami-78b6d448"
+        "AMIpv":  "ami-00630d30",
+        "AMIhvm": "ami-12630d22"
       }
     }
   },
@@ -165,6 +165,10 @@
           "if [ ! -e '/var/log/telemetry' ]; then",
           "  ln -s /mnt/telemetry/log /var/log/telemetry",
           "fi",
+          "if [ -f /etc/heka.d/incoming_stats.toml ]; then",
+          "  # Web servers don't produce these logs, so delete the config:",
+          "  rm /etc/heka.d/incoming_stats.toml",
+          "fi",
           { "Fn::Join": [ "", [
             "echo '{\"incoming_bucket\":\"", { "Ref": "IncomingBucketName" }, "\",",
             "\"incoming_queue\":\"", { "Ref": "IncomingQueueName" }, "\",",
@@ -196,6 +200,13 @@
           { "Key": "Name",        "Value": "telemetry-process-incoming", "PropagateAtLaunch": true },
           { "Key": "Owner",       "Value": { "Ref": "SSHKeyName" },      "PropagateAtLaunch": true }
         ]
+      },
+      "UpdatePolicy": {
+        "AutoScalingRollingUpdate": {
+          "MinInstancesInService": "0",
+          "MaxBatchSize": "1",
+          "PauseTime": "PT10M"
+        }
       }
     },
 
@@ -270,6 +281,13 @@
           { "Key": "Name",        "Value": "telemetry-process-incoming-overflow-1", "PropagateAtLaunch": true },
           { "Key": "Owner",       "Value": { "Ref": "SSHKeyName" },                 "PropagateAtLaunch": true }
         ]
+      },
+      "UpdatePolicy": {
+        "AutoScalingRollingUpdate": {
+          "MinInstancesInService": "0",
+          "MaxBatchSize": "1",
+          "PauseTime": "PT10M"
+        }
       }
     },
 
@@ -357,6 +375,10 @@
           "chown -R ubuntu:ubuntu /mnt/telemetry",
           "if [ ! -e '/var/log/telemetry' ]; then",
           "  ln -s /mnt/telemetry/log /var/log/telemetry",
+          "fi",
+          "if [ -f /etc/heka.d/server.toml ]; then",
+          "  # PI servers don't produce these logs, so delete the config:",
+          "  rm /etc/heka.d/server.toml",
           "fi",
           { "Fn::Join": [ "", [
             "echo '{\"incoming_bucket\":\"", { "Ref": "IncomingBucketName" }, "\",",
@@ -536,6 +558,10 @@
           "chown -R ubuntu:ubuntu /mnt/telemetry",
           "if [ ! -e '/var/log/telemetry' ]; then",
           "  ln -s /mnt/telemetry/log /var/log/telemetry",
+          "fi",
+          "if [ -f /etc/heka.d/server.toml ]; then",
+          "  # PI servers don't produce these logs, so delete the config:",
+          "  rm /etc/heka.d/server.toml",
           "fi",
           { "Fn::Join": [ "", [
             "echo '{\"incoming_bucket\":\"", { "Ref": "IncomingBucketName" }, "\",",
