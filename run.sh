@@ -4,7 +4,7 @@ MAPREDUCE="uitour"
 VERBOSE=false
 
 # Pull is a little more complicated, since we only want to do it if we have cached data.
-if [ -d "/mnt/telemetry/work/cache/" ]; then
+if [ -d "/mnt/telemetry/work/cache/saved_session" ]; then
   PULL="--local-only"
 else
   PULL=""
