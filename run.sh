@@ -4,7 +4,7 @@ MAPREDUCE="uitour"
 VERBOSE=false
 
 # Pull is a little more complicated, since we only want to do it if we have cached data.
-if [ -d "/mnt/telemetry/work/cache/saved_session" ]; then
+if [ -d "../work/cache/saved_session" ]; then
   PULL="--local-only"
 else
   PULL=""
@@ -43,6 +43,6 @@ while [[ $1 ]]; do
 done
 
 if $VERBOSE; then
-  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir /mnt/telemetry/work/cache --work-dir /mnt/telemetry/work --output /mnt/telemetry/my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
+  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
 fi
-python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir /mnt/telemetry/work/cache --work-dir /mnt/telemetry/work --output /mnt/telemetry/my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
+python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
