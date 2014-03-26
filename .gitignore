@@ -1,3 +1,9 @@
 my_mapreduce_results.out
 temp*.json
 *.swp
+bin
+lib
+work
+include
+*.pyc
+.Python
