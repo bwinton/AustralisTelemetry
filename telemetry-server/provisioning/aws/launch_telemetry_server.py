@@ -37,13 +37,18 @@ class TelemetryServerLauncher(Launcher):
             run("make")
             sudo("make install")
 
-    def heka_pkg_name(self):
-        return "heka_0.5.0_amd64.deb"
+    def heka_pkg_version(self):
+        return "0.5.0"
+
+    def heka_pkg_url(self):
+        return "https://github.com/mozilla-services/heka/releases/" \
+            "download/v{0}/heka_{0}_amd64.deb".format(self.heka_pkg_version())
 
     def install_heka(self):
-        heka_pkg = self.heka_pkg_name()
-        run("wget http://people.mozilla.org/~mreid/{0}".format(heka_pkg))
-        sudo("dpkg -i {0}".format(heka_pkg))
+        run("wget {0} -O heka.deb".format(self.heka_pkg_url()))
+        sudo("dpkg -i heka.deb")
+        sudo("mkdir /etc/heka.d")
+        sudo("mkdir /var/cache/hekad")
 
     def create_logrotate_config(self, lr_file, target_log, create=True):
         sudo("echo '%s {' > %s" % (target_log, lr_file))
@@ -87,14 +92,24 @@ class TelemetryServerLauncher(Launcher):
         run("echo 'Soft limit:'; ulimit -S -n")
         run("echo 'Hard limit:'; ulimit -H -n")
 
-        # Setup logrotate for the stats log and process-incoming log
+        # Setup logrotate for the telemetry log files
         self.create_logrotate_config("/etc/logrotate.d/telemetry-server",
                 "/var/log/telemetry/telemetry-server.log")
         self.create_logrotate_config("/etc/logrotate.d/telemetry-incoming",
                 "/var/log/telemetry/telemetry-incoming.log")
+        self.create_logrotate_config("/etc/logrotate.d/telemetry-incoming-stats",
+                "/var/log/telemetry/telemetry-incoming-stats.log")
+
+        code_base = self.home + "/telemetry-server"
+        # Configure heka
+        with cd(code_base + "/monitoring/heka"):
+            sudo("cp *.toml /etc/heka.d/")
+            for d in ["lua_decoders", "lua_filters", "lua_modules"]:
+                sudo("if [ -d {0} ]; then cp {0}/* /usr/share/heka/{0}; fi".format(d))
+            # See https://github.com/mozilla-services/heka/issues/739
+            sudo("chown {0} /var/cache/hekad".format(self.ssl_user))
 
         # Create startup scripts:
-        code_base = "/home/" + self.ssl_user + "/telemetry-server"
         c_file = "/etc/init/telemetry-server.conf"
         self.start_suid_script(c_file, self.ssl_user)
         sudo("echo '    cd {1}/http' >> {0}".format(c_file, code_base))
@@ -105,7 +120,10 @@ class TelemetryServerLauncher(Launcher):
         sudo("echo 'stop on runlevel [016]' >> {0}".format(c_file))
 
         c_file = "/etc/init/telemetry-export.conf"
-        base_export_command = "/usr/bin/python -u -m telemetry.util.export -d {0}/data -p '^telemetry.log.*[.]finished$' --config /etc/mozilla/telemetry_aws.json".format(base_dir)
+        base_export_command = "/usr/bin/python -u -m telemetry.util.export " \
+            "-d {0}/data " \
+            "-p '^telemetry.log.*[.]finished$' " \
+            "--config /etc/mozilla/telemetry_aws.json".format(base_dir)
 
         self.start_suid_script(c_file, self.ssl_user)
         sudo("echo '    cd {1}' >> {0}".format(c_file, code_base))
@@ -126,7 +144,16 @@ class TelemetryServerLauncher(Launcher):
         sudo("echo '    cd {1}' >> {0}".format(c_file, code_base))
         # Use unbuffered output (-u) so we can see things in the log
         # immediately.
-        sudo("echo \"    /usr/bin/python -u -m process_incoming.process_incoming_standalone -c /etc/mozilla/telemetry_aws.json -w {1}/work -o {1}/processed -t telemetry/telemetry_schema.json -l /var/log/telemetry/telemetry-incoming.log >> /var/log/telemetry/telemetry-incoming.out 2>&1\" >> {0}".format(c_file, base_dir))
+        sudo("echo \"    /usr/bin/python -u " \
+             "-m process_incoming.process_incoming_standalone " \
+             "-c /etc/mozilla/telemetry_aws.json " \
+             "-w {1}/work " \
+             "-o {1}/processed " \
+             "-t telemetry/telemetry_schema.json " \
+             "-l /var/log/telemetry/telemetry-incoming.log " \
+             "-s /var/log/telemetry/telemetry-incoming-stats.log >> " \
+             "/var/log/telemetry/telemetry-incoming.out 2>&1\" >> {0}".format(
+                c_file, base_dir))
         # NOTE: Don't automatically start/stop this service, since we only want
         #       to start it on "primary" nodes, and we only want to stop it in
         #       safe parts of the process-incoming code.
@@ -141,13 +168,13 @@ class TelemetryServerLauncher(Launcher):
 
         c_file = "/etc/init/telemetry-heka.conf"
         self.start_suid_script(c_file, self.ssl_user)
-        sudo("echo '    cd {1}/monitoring/heka' >> {0}".format(c_file, code_base))
-        sudo("echo \"    /usr/bin/hekad -config heka.toml >> /var/log/telemetry/telemetry-heka.out\" >> {0}".format(c_file))
+        # If you want to see the hekad output, look in
+        #  /var/log/upstart/telemetry-heka.log
+        sudo("echo '    /usr/bin/hekad -config /etc/heka.d' >> {0}".format(c_file))
         self.end_suid_script(c_file)
         sudo("echo 'kill signal INT' >> {0}".format(c_file))
-        # Start/stop this in lock step with telemetry-server
-        sudo("echo 'start on started telemetry-server' >> {0}".format(c_file))
-        sudo("echo 'stop on stopped telemetry-server' >> {0}".format(c_file))
+        # Start heka in lock step with the services that emit logs
+        sudo("echo 'start on started telemetry-server or started telemetry-incoming' >> {0}".format(c_file))
 
         # Service configuration for telemetry-analysis
         c_file = "/etc/init/telemetry-analysis.conf"

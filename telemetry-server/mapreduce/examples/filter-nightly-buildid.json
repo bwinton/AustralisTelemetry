@@ -3,7 +3,7 @@
   "dimensions": [
     {
       "field_name": "reason",
-      "allowed_values": ["saved-session"]
+      "allowed_values": ["saved-session", "idle-daily"]
     },
     {
       "field_name": "appName",
@@ -11,7 +11,7 @@
     },
     {
       "field_name": "appUpdateChannel",
-      "allowed_values": ["nightly", "aurora", "beta"]
+      "allowed_values": ["nightly"]
     },
     {
       "field_name": "appVersion",
@@ -19,13 +19,15 @@
     },
     {
       "field_name": "appBuildID",
-      "allowed_values": "*"
+      "allowed_values": {
+        "min": "20140228"
+      }
     },
     {
       "field_name": "submission_date",
       "allowed_values": {
-        "min": "20140203",
-        "max": "20140321"
+        "min": "20140308",
+        "max": "20140309"
       }
     }
   ]
