@@ -2,6 +2,7 @@
 FILTER="filter-test.json"
 MAPREDUCE="uitour"
 VERBOSE=false
+PULL="--local-only"
 
 # Pull is a little more complicated, since we only want to do it if we have cached data.
 if [ -d "../work/cache/saved_session" ]; then

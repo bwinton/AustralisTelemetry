@@ -399,6 +399,7 @@ class Mapper:
             filename = os.path.join(self.work_dir, "cache", input_file["name"])
 
         if filename.endswith(StorageLayout.COMPRESSED_SUFFIX):
+            
             decompress_cmd = [StorageLayout.COMPRESS_PATH] + StorageLayout.DECOMPRESSION_ARGS
             raw_handle = open(filename, "rb")
             input_file["raw_handle"] = raw_handle
