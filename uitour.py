@@ -1,6 +1,8 @@
 # Same as the osdistribution.py example in jydoop
-import json
 from collections import defaultdict
+import json
+import sys
+import traceback
 
 pymap = map
 
@@ -67,10 +69,12 @@ def map(k, d, v, cx):
           cx.write(prefix+"-".join(event_string[:-1]), event_string[-1])
           
   except Exception, e:
-    cx.write("ERROR:", e)
+    print >> sys.stderr, "ERROR:", e
+    print >> sys.stderr, traceback.format_exc()
+    cx.write("ERROR:", str(e))
 
 def reduce(k, v, cx):
-  if k == "JSON PARSE ERROR:":
+  if k == "ERROR:":
     for i in set(v):
       cx.write(k, i)
     return
