@@ -16,7 +16,7 @@
     {
       "field_name": "appVersion",
       "allowed_values": {
-        "min": "29.0",
+        "min": "24.0",
         "max": "29.999"
       }
     },
@@ -24,7 +24,7 @@
       "field_name": "appBuildID",
       "allowed_values": {
         "min": "20140208004002",
-        "min": "99999999999999"
+        "max": "99999999999999"
       }
     },
     {
