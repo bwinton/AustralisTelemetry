@@ -1,4 +1,6 @@
 # Set up arguments.
+KEY=""
+SECRET=""
 FILTER="filter-test.json"
 MAPREDUCE="uitour"
 VERBOSE=false
@@ -14,6 +16,12 @@ fi
 # Parse the arguments, kinda.
 while [[ $1 ]]; do
   case $1 in
+    -a|--auth)
+      shift
+      arr=(${1//:/ })
+      KEY="-k ${arr[0]}"
+      SECRET="-s ${arr[1]}"
+      ;;
     -f|--for-real)
       FILTER="filter.json"
       ;;
@@ -44,6 +52,6 @@ while [[ $1 ]]; do
 done
 
 if $VERBOSE; then
-  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
+  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $KEY $SECRET $PULL --bucket "telemetry-published-v1"
 fi
-python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $PULL --bucket "telemetry-published-v1"
+python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../my_mapreduce_results.out $KEY $SECRET $PULL --bucket "telemetry-published-v1"
