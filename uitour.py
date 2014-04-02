@@ -50,7 +50,11 @@ def map(k, d, v, cx):
         #_DEFAULT_ bucket for everything but tours, which have their
         #own buckets
         for e in durations:
-            bucketDurations[e["bucket"]].append(e["duration"])
+            #correct for addition of firstrun buckets
+            if type(e) is dict:
+              bucketDurations[e["bucket"]].append(e["duration"])
+            else:
+              bucketDurations["__DEFAULT__"].append(e)
 
         #otherwise, all times are averaged to add to the overall statistic so
         #that a single session doesn't overweight in an average
