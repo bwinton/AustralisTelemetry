@@ -17,3 +17,17 @@ mkdir -p work/cache
 cd telemetry-server
 ../run.sh -v
 ```
+
+If you’re running it not on a VM, you may also need to do the following before `cd telemetry-server`:
+
+```Shell
+easy_install pip
+pip install boto
+```
+
+And create a `~/.boto` file with the contents:
+```INI
+[Credentials]
+aws_access_key_id = <Your AWS Key>
+aws_secret_access_key = <Your AWS Secret>
+```
