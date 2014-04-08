@@ -25,13 +25,12 @@ def map(k, d, v, cx):
     countableEventBuckets = []
     customizeBuckets = []
 
-    prefix = "post::"
+    prefix = ""
     cx.write(prefix+ "instances", 1)
 
 
     if "toolbars" in ui:
         toolbars = ui["toolbars"]
-
         countableDefaultEvents = toolbars["countableEvents"].get("__DEFAULT__", {})
         feature_measures = {}
         #note: simple swaps kept in "kept"

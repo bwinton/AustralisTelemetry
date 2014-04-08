@@ -14,16 +14,17 @@ fi
 # Parse the arguments, kinda.
 while [[ $1 ]]; do
   case $1 in
-    -f|--for-real)
-      FILTER="filter.json"
+    --filter)
+      shift
+      FILTER=$1
       ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
-      echo "  -f, --for-real        Use the less-specific non-test filter."
       echo "  -h, --help            Show this help."
       echo "  -m, --map-reduce ARG  Specify which mapreduce file to use."
       echo "  -p, --pull-data       Force the program to skip the cache, and pull the data again."
       echo "  -v, --verbose         Show more info about what's happening'."
+      echo "  --filter              Use specified filter."
       exit 0
       ;;
     -m|--map-reduce)
