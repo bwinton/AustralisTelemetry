@@ -30,10 +30,10 @@ while [[ $1 ]]; do
       ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
-      echo "  -f, --filter          Specify which filter to use."
+      echo "  -f, --filter          Specify which filter to use. [default: filter-test]"
       echo "  -h, --help            Show this help."
-      echo "  -m, --map-reduce ARG  Specify which mapreduce file to use."
-      echo "  -o, --out ARG         Specify which file to output to."
+      echo "  -m, --map-reduce ARG  Specify which mapreduce file to use. [default: uitour]"
+      echo "  -o, --out ARG         Specify which file to output to. [default: my_mapreduce_results.out]"
       echo "  -p, --pull-data       Force the program to skip the cache, and pull the data again."
       echo "  -v, --verbose         Show more info about what's happening'."
       exit 0
