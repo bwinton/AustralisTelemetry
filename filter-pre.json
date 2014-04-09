@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "dimensions": [
+    {
+      "field_name": "reason",
+      "allowed_values": ["saved-session"]
+    },
+    {
+      "field_name": "appName",
+      "allowed_values": ["Firefox"]
+    },
+    {
+      "field_name": "appUpdateChannel",
+      "allowed_values": ["beta", "aurora", "release"]
+    },
+    {
+      "field_name": "appVersion",
+      "allowed_values": {
+        "min": "28.0",
+        "max": "28.999"
+      }
+    },
+    {
+      "field_name": "appBuildID",
+      "allowed_values": {
+        "min": "20140123004002",
+        "max": "99999999999999"
+      }
+    },
+    {
+      "field_name": "submission_date",
+      "allowed_values": {
+        "min": "20140203",
+        "max": "20140321"
+      }
+    }
+  ]
+}

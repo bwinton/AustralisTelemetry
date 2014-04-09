@@ -2,7 +2,7 @@
 # Set up arguments.
 KEY=""
 SECRET=""
-FILTER="filter-test.json"
+FILTER="filter-test"
 MAPREDUCE="uitour"
 VERBOSE=false
 PULL="--local-only"
@@ -24,12 +24,13 @@ while [[ $1 ]]; do
       KEY="-k ${arr[0]}"
       SECRET="-s ${arr[1]}"
       ;;
-    -f|--for-real)
-      FILTER="filter.json"
+    -f|--filter)
+      shift
+      FILTER=$1
       ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
-      echo "  -f, --for-real        Use the less-specific non-test filter."
+      echo "  -f, --filter          Specify which filter to use."
       echo "  -h, --help            Show this help."
       echo "  -m, --map-reduce ARG  Specify which mapreduce file to use."
       echo "  -o, --out ARG         Specify which file to output to."
@@ -59,6 +60,6 @@ while [[ $1 ]]; do
 done
 
 if $VERBOSE; then
-  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
+  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
 fi
-python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
+python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
