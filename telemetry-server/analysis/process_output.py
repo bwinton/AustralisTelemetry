@@ -1,3 +1,21 @@
+''' 
+post-process what comes out of m/r job
+
+usage: cat final_data/my_mapreduce_results_pre.out | python process_output.py 
+
+input: output from uitour, ex:
+visibleTabs--[221, 1] count	1
+visibleTabs--[221, 1] sum	1.0
+click-builtin-item-alltabs-button-left count	422
+
+output: csv w/ header listing
+item,subitem,instances per session,percentage of sessions with occurrence
+
+ex:
+bookmarksBarEnabled,False,194609.0,0.5405
+bookmarksBarEnabled,True,165417.0,0.4595
+'''
+
 import fileinput
 from collections import defaultdict
 from pprint import pprint as pp
@@ -13,11 +31,13 @@ for line in fileinput.input():
 		tokens = line.split("-", 1)
 	elif line.startswith("customize"):
 		tokens = line.split("-", 1)
-	elif line.startswith("bucket"):
+	elif line.startswith("bucket") or line.startswith("__DEFAULT__"):
 		tokens = line.split("-c", 1)
 		tokens[1] = "c" + tokens[1]
 		del tokens[0]
 		tokens = tokens[0].split("-", 1)
+	elif line.startswith("seenPage"):
+		tokens = line.split("-",1)
 	else:
 		tokens = line.split("--", 1)
 	category = tokens[0]
@@ -29,8 +49,7 @@ for line in fileinput.input():
 	else:
 		instances = float(tokens[0].split()[-1])
 
+print "item,subitem,instances per session,percentage of sessions with occurrence"
 for category, cat_fs in features.iteritems():
-	print category
-
 	for f in sorted(cat_fs,key = cat_fs.get, reverse = True):
-		print "\t", f, "\t", str(round(cat_fs[f]*100/instances, 2))+"%"
+		print category + "," + f + "," +str(cat_fs[f])+"," +str(round(cat_fs[f]/instances, 4))
