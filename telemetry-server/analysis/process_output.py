@@ -21,7 +21,7 @@ from collections import defaultdict
 from pprint import pprint as pp
 import operator
 
-features = defaultdict(lambda: defaultdict(int))
+features = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 instances = None
 
 for line in fileinput.input():
@@ -44,12 +44,17 @@ for line in fileinput.input():
 	if not category.startswith("instances"):
 		obj = tokens[1].split(" ", 1)[0]
 		val = tokens[1].split()
-		if val[1] == "count":
-			features[category][obj] =float(val[2])
+		if val[1] == "sum":
+			features[category][obj]["sum"] = float(val[2])
+		elif val[1] == "count":
+			features[category][obj]["count"] = float(val[2])
 	else:
 		instances = float(tokens[0].split()[-1])
 
-print "item,subitem,instances per session,percentage of sessions with occurrence"
+print "item,subitem,avg. instances per session,pct sessions with occurrence"
 for category, cat_fs in features.iteritems():
 	for f in sorted(cat_fs,key = cat_fs.get, reverse = True):
-		print category + "," + f + "," +str(cat_fs[f])+"," +str(round(cat_fs[f]/instances, 4))
+		print category + "," + f + "," +str(round(cat_fs[f]["sum"]/instances, 4))+"," +str(round(cat_fs[f]["count"]/instances, 4))
+
+
+
