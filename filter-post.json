@@ -31,7 +31,7 @@
       "field_name": "submission_date",
       "allowed_values": {
         "min": "20140203",
-        "max": "20140321"
+        "max": "20140429"
       }
     }
   ]

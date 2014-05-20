@@ -28,19 +28,23 @@ def map(k, d, v, cx):
     customizeBuckets = []
 
     prefix = ""
-    cx.write(prefix+ "instances", 1)
-
 
     if "toolbars" in ui:
-        toolbars = ui["toolbars"]
-        countableDefaultEvents = toolbars["countableEvents"].get("__DEFAULT__", {})
+        toolbars = ui["toolbars"] 
+        if not "menuBarEnabled" in toolbars: #weird incomplete cases
+          return
+        cx.write(prefix+ "instances", 1)
+        countableEvents = toolbars.get("countableEvents", {})
         feature_measures = {}
         #note: simple swaps kept in "kept"
         feature_measures["features_kept"] = toolbars.get("defaultKept",[])
         feature_measures["features_moved"] = toolbars.get("defaultMoved",[])
         feature_measures["extra_features_added"] = toolbars.get("nondefaultAdded", [])
         feature_measures["features_removed"] = toolbars.get("defaultRemoved", [])
-        
+      
+        for k,v in toolbars.iteritems():
+          if k not in ["defaultKept", "defaultMoved", "nondefaultAdded", "defaultRemoved", "countableEvents", "durations"]:
+            cx.write(prefix + k + "--" + str(v), 1)
         bucketDurations = defaultdict(list)
         durations = toolbars.get("durations",{}).get("customization",[])
 
@@ -68,9 +72,14 @@ def map(k, d, v, cx):
             for item in v:
                 cx.write(prefix+ e+"--"+item, 1)
 
-        for event_string in enum_paths(countableDefaultEvents,[]):
+        for event_string in enum_paths(countableEvents,[]):
           cx.write(prefix+"-".join(event_string[:-1]), event_string[-1])
-          
+          cx.write(prefix+"-".join(event_string[1:-1]), event_string[-1])
+
+    if "UITour" in ui:
+      for tour in ui["UITour"]["seenPageIDs"]:
+        cx.write(prefix + "seenPage-" + tour, 1)
+
   except Exception, e:
     print >> sys.stderr, "ERROR:", e
     print >> sys.stderr, traceback.format_exc()
