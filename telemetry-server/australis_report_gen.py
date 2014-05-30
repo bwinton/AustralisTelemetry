@@ -12,8 +12,13 @@
 import argparse
 import json
 import os
-from telemetry-server.mapreduce.job import Job
+from collections import namedtuple
+from datetime import datetime
+import traceback
+import sys
+import telemetry.util.timer as timer
 
+from mapreduce.job import Job
 
 FILTER_DIR = "./"
 
@@ -41,8 +46,8 @@ def generate_filters(args):
     {
       "field_name": "appVersion",
       "allowed_values": {
-        "min": "0.0",
-        "max": "999.999"
+        "min": "29.0",
+        "max": "29.999"
       }
     },
     {
@@ -56,20 +61,58 @@ def generate_filters(args):
       "field_name": "submission_date",
       "allowed_values": {
         "min": "20140203",
-        "max": "20140321"
+        "max": "20140429"
       }
     }
     ]
     }
-    filterfile = FILTER_DIR + "auto_filter.json"
+    filterfile = FILTER_DIR + "filter-auto.json"
     with open(filterfile, "w") as outfile:
         json.dump(fltr, outfile)
+
     return filterfile
 
-def run_mr(mr_file, filter, output_file):
-    cmd = " ".join(["python -m telemetry-server/mapreduce.job", mr_file, "--input-filter", filter, "--num-mappers 16 --num-reducers 4, --data-dir ./work/cache --work-dir ./work --output", output_file, "$PULL --bucket \"telemetry-published-v1\""])
-    j = Job()
-    print j
+#many of these args can be exposed at the command line. no need for now.
+def run_mr(filter, output_file):
+  
+  args = {
+    "job_script" : "../uitour.py",
+    "input_filter": filter,
+    "num_mappers" : 16,
+    "num_reducers" : 4,
+    "data_dir" : "../work/cache",
+    "work_dir" : "../work",
+    "output" : output_file,
+    "bucket" : "telemetry-published-v1",
+    "local_only" : True
+  }
+
+
+    # if not args.local_only:
+    #     if not BOTO_AVAILABLE:
+    #         print "ERROR: The 'boto' library is required except in 'local-only' mode."
+    #         print "       You can install it using `sudo pip install boto`"
+    #         parser.print_help()
+    #         return -2
+    #     # If we want to process remote data, some more arguments are required.
+    #     for remote_req in ["bucket"]:
+    #         if not hasattr(args, remote_req) or getattr(args, remote_req) is None:
+    #             print "ERROR:", remote_req, "is a required option"
+    #             parser.print_help()
+    #             return -1
+
+  job = Job(args)
+  start = datetime.now()
+  exit_code = 0
+  try:
+      job.mapreduce()
+  except:
+      traceback.print_exc(file=sys.stderr)
+      exit_code = 2
+  duration = timer.delta_sec(start)
+  print "All done in %.2fs" % (duration)
+  return exit_code
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-s", "--start", help="enter start date in the format YYYYMMDD, ex: 20140203", required=True)
@@ -82,8 +125,7 @@ parser.add_argument("--release", action="store_true", help="Use flag to include 
 args = parser.parse_args()
 
 filterfile = generate_filters(args)
+outfile = "./out_test.out"
 
-#maybe set some of these up top
-run_mr("./uitour.py", filterfile, "../mr_output.out")
-
+run_mr(filterfile, outfile)
 
