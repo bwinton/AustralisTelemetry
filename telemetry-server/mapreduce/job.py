@@ -51,7 +51,6 @@ class Job:
 
     def __init__(self, config):
         # Sanity check args.
-        print config
         if config.get("num_mappers") <= 0:
             raise ValueError("Number of mappers must be greater than zero")
         if config.get("num_reducers") <= 0:
@@ -504,6 +503,7 @@ def main():
                 parser.print_help()
                 return -1
 
+    args = args.__dict__                
     job = Job(args)
     start = datetime.now()
     exit_code = 0
