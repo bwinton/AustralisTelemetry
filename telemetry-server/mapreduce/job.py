@@ -20,9 +20,7 @@ from telemetry.persist import StorageLayout
 import telemetry.util.s3 as s3util
 import telemetry.util.timer as timer
 import subprocess
-import csv
 from subprocess import Popen, PIPE
-import signal
 try:
     from boto.s3.connection import S3Connection
     BOTO_AVAILABLE=True
@@ -148,14 +146,6 @@ class Job:
         partitions = self.partition(files, remote_files)
         print "Done"
 
-        def checkExitCode(proc):
-            # If process was terminated by a signal, exitcode is the negative signal value
-            if proc.exitcode == -signal.SIGKILL:
-                # SIGKILL is most likely an OOM kill
-                raise MemoryError("%s ran out of memory" % proc.name)
-            elif proc.exitcode:
-                raise OSError("%s exited with code %d" % (proc.name, proc.exitcode))
-
         # Partitions are ready. Map.
         mappers = []
         for i in range(self._num_mappers):
@@ -170,7 +160,6 @@ class Job:
                     # TODO: Bail, since results will be unreliable?
                 p = Process(
                         target=Mapper,
-                        name=("Mapper-%d" % i),
                         args=(i, partitions[i], self._work_dir, self._job_module, self._num_reducers))
                 mappers.append(p)
                 p.start()
@@ -178,20 +167,17 @@ class Job:
                 print "Skipping mapper", i, "- no input files to process"
         for m in mappers:
             m.join()
-            checkExitCode(m)
 
         # Mappers are done. Reduce.
         reducers = []
         for i in range(self._num_reducers):
             p = Process(
                     target=Reducer,
-                    name=("Reducer-%d" % i),
                     args=(i, self._work_dir, self._job_module, self._num_mappers))
             reducers.append(p)
             p.start()
         for r in reducers:
             r.join()
-            checkExitCode(r)
 
         # Reducers are done.  Output results.
         to_combine = 1
@@ -347,13 +333,6 @@ class TextContext(Context):
         self._sink.write(str(value))
         self._sink.write(self.record_separator)
 
-    def writecsv(self, values):
-        w = csv.writer(self._sink)
-        w.writerow(values)
-
-    def writeline(self, value):
-        self._sink.write(value)
-        self._sink.write(self.record_separator)
 
 class Mapper:
     def __init__(self, mapper_id, inputs, work_dir, module, partition_count):
@@ -379,9 +358,7 @@ class Mapper:
             for line in input_file["handle"]:
                 line_num += 1
                 try:
-                    # Remove the trailing EOL character(s) before passing to
-                    # the map function.
-                    key, value = line.rstrip('\r\n').split("\t", 1)
+                    key, value = line.split("\t", 1)
                     mapfunc(key, input_file["dimensions"], value, context)
                 except ValueError, e:
                     # TODO: increment "bad line" metrics.
@@ -399,7 +376,6 @@ class Mapper:
             filename = os.path.join(self.work_dir, "cache", input_file["name"])
 
         if filename.endswith(StorageLayout.COMPRESSED_SUFFIX):
-            
             decompress_cmd = [StorageLayout.COMPRESS_PATH] + StorageLayout.DECOMPRESSION_ARGS
             raw_handle = open(filename, "rb")
             input_file["raw_handle"] = raw_handle
@@ -446,28 +422,20 @@ class Reducer:
         if callable(setupreducefunc):
             setupreducefunc(context)
 
-        map_only = False
         if not callable(reducefunc):
-            print "No reduce function (that's ok). Writing out all the data."
-            map_only = True
-
-        collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
-        for i in range(mapper_count):
-            mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
-            # read, group by key, call reducefunc, output
-            input_fd = open(mapper_file, "rb")
-            while True:
-                try:
-                    key, value = marshal.load(input_fd)
-                    if map_only:
-                        # Just write out each row as we see it
-                        context.write(key, value)
-                    else:
+            print "No reduce function (that's ok)"
+        else:
+            collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
+            for i in range(mapper_count):
+                mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
+                # read, group by key, call reducefunc, output
+                input_fd = open(mapper_file, "rb")
+                while True:
+                    try:
+                        key, value = marshal.load(input_fd)
                         collected.collect(key, value)
-                except EOFError:
-                    break
-        if not map_only:
-            # invoke the reduce function on each combined output.
+                    except EOFError:
+                        break
             for k,v in collected.iteritems():
                 reducefunc(k, v, context)
         context.finish()
