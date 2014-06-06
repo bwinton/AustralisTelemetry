@@ -21,11 +21,12 @@ def map(k, d, v, cx):
     s = j["simpleMeasurements"]
     if not "UITelemetry" in s:
       return
+    sysinfo = j["info"]
     ui = s["UITelemetry"]
     countableEventBuckets = []
     customizeBuckets = []
 
-    prefix = ""
+    prefix = sysinfo["OS"] + "&&"
 
     if "toolbars" in ui:
         toolbars = ui["toolbars"] 

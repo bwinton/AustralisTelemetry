@@ -16,45 +16,59 @@ bookmarksBarEnabled,False,194609.0,0.5405
 bookmarksBarEnabled,True,165417.0,0.4595
 '''
 
-import fileinput
-from collections import defaultdict
-from pprint import pprint as pp
-import operator
+def process_output(filecontents, outfile):
+	from collections import defaultdict
+	from pprint import pprint as pp
+	import operator
+	import csv
 
-features = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-instances = None
+	features = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+	instances = None
 
-for line in fileinput.input():
-	if line.startswith("ERROR"):
-		continue
-	if line.startswith("click"):
-		tokens = line.split("-", 1)
-	elif line.startswith("customize"):
-		tokens = line.split("-", 1)
-	elif line.startswith("bucket") or line.startswith("__DEFAULT__"):
-		tokens = line.split("-c", 1)
-		tokens[1] = "c" + tokens[1]
-		del tokens[0]
-		tokens = tokens[0].split("-", 1)
-	elif line.startswith("seenPage"):
-		tokens = line.split("-",1)
-	else:
-		tokens = line.split("--", 1)
-	category = tokens[0]
-	if not category.startswith("instances"):
-		obj = tokens[1].split(" ", 1)[0]
-		val = tokens[1].split()
-		if val[1] == "sum":
-			features[category][obj]["sum"] = float(val[2])
-		elif val[1] == "count":
-			features[category][obj]["count"] = float(val[2])
-	else:
-		instances = float(tokens[0].split()[-1])
+	for fullline in filecontents:
+		if fullline.startswith("ERROR"):
+			continue
 
-print "item,subitem,avg. instances per session,pct sessions with occurrence"
-for category, cat_fs in features.iteritems():
-	for f in sorted(cat_fs,key = cat_fs.get, reverse = True):
-		print category + "," + f + "," +str(round(cat_fs[f]["sum"]/instances, 4))+"," +str(round(cat_fs[f]["count"]/instances, 4))
+		#deal with prefixes
+		prefix, line = fullline.split("&&", 1)
+
+		if line.startswith("click"):
+			tokens = line.split("-", 1)
+		elif line.startswith("customize"):
+			tokens = line.split("-", 1)
+		elif line.startswith("bucket") or line.startswith("__DEFAULT__"):
+			tokens = line.split("-c", 1)
+			tokens[1] = "c" + tokens[1]
+			del tokens[0]
+			tokens = tokens[0].split("-", 1)
+		elif line.startswith("seenPage"):
+			tokens = line.split("-",1)
+		else:
+			tokens = line.split("--", 1)
+		category = tokens[0]
+		if not category.startswith("instances"):
+			obj = tokens[1].split(" ", 1)[0]
+			val = tokens[1].split()
+			if val[1] == "sum":
+				features[prefix][category][obj]["sum"] = float(val[2])
+			elif val[1] == "count":
+				features[prefix][category][obj]["count"] = float(val[2])
+		else:
+			instances = float(tokens[0].split()[-1])
+
+	with open(outfile, "w") as outfile:
+		csvwriter = csv.writer(outfile)
+		csvwriter.writerow(["sys_info", "item","subitem","avg. instances per session","pct sessions with occurrence"])
+		for prefix, agg_features in features.iteritems():
+			for category, cat_fs in agg_features.iteritems():
+				for f in sorted(cat_fs,key = cat_fs.get, reverse = True):
+					csvwriter.writerow([prefix,category,f,str(round(cat_fs[f]["sum"]/instances, 4)),str(round(cat_fs[f]["count"]/instances, 4))])
+
+if __name__ == '__main__':
+	import fileinput
+	import sys
+
+	process_output(sys.stdout)
 
 
 
