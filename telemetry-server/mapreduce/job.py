@@ -20,7 +20,9 @@ from telemetry.persist import StorageLayout
 import telemetry.util.s3 as s3util
 import telemetry.util.timer as timer
 import subprocess
+import csv
 from subprocess import Popen, PIPE
+import signal
 try:
     from boto.s3.connection import S3Connection
     BOTO_AVAILABLE=True
@@ -49,37 +51,37 @@ class Job:
 
     def __init__(self, config):
         # Sanity check args.
-        if config.num_mappers <= 0:
+        if config.get("num_mappers") <= 0:
             raise ValueError("Number of mappers must be greater than zero")
-        if config.num_reducers <= 0:
+        if config.get("num_reducers") <= 0:
             raise ValueError("Number of reducers must be greater than zero")
-        if not os.path.isdir(config.data_dir):
+        if not os.path.isdir(config.get("data_dir")):
             raise ValueError("Data dir must be a valid directory")
-        if not os.path.isdir(config.work_dir):
+        if not os.path.isdir(config.get("work_dir")):
             raise ValueError("Work dir must be a valid directory")
-        if not os.path.isfile(config.job_script):
+        if not os.path.isfile(config.get("job_script", "")):
             raise ValueError("Job script must be a valid python file")
-        if not os.path.isfile(config.input_filter):
+        if not os.path.isfile(config.get("input_filter")):
             raise ValueError("Input filter must be a valid json file")
 
-        self._input_dir = config.data_dir
+        self._input_dir = config.get("data_dir")
         if self._input_dir[-1] == os.path.sep:
             self._input_dir = self._input_dir[0:-1]
-        self._work_dir = config.work_dir
-        self._input_filter = TelemetrySchema(json.load(open(config.input_filter)))
+        self._work_dir = config.get("work_dir")
+        self._input_filter = TelemetrySchema(json.load(open(config.get("input_filter"))))
         self._allowed_values = self._input_filter.sanitize_allowed_values()
-        self._output_file = config.output
-        self._num_mappers = config.num_mappers
-        self._num_reducers = config.num_reducers
-        self._local_only = config.local_only
-        self._bucket_name = config.bucket
-        self._aws_key = config.aws_key
-        self._aws_secret_key = config.aws_secret_key
-        modulefd = open(config.job_script)
+        self._output_file = config.get("output")
+        self._num_mappers = config.get("num_mappers")
+        self._num_reducers = config.get("num_reducers")
+        self._local_only = config.get("local_only")
+        self._bucket_name = config.get("bucket")
+        self._aws_key = config.get("aws_key")
+        self._aws_secret_key = config.get("aws_secret_key")
+        modulefd = open(config.get("job_script"))
         # let the job script import additional modules under its path
-        sys.path.append(os.path.dirname(config.job_script))
+        sys.path.append(os.path.dirname(config.get("job_script")))
         ## Lifted from FileDriver.py in jydoop.
-        self._job_module = imp.load_module("telemetry_job", modulefd, config.job_script, ('.py', 'U', 1))
+        self._job_module = imp.load_module("telemetry_job", modulefd, config.get("job_script"), ('.py', 'U', 1))
 
     def dump_stats(self, partitions):
         total = sum(partitions)
@@ -146,6 +148,14 @@ class Job:
         partitions = self.partition(files, remote_files)
         print "Done"
 
+        def checkExitCode(proc):
+            # If process was terminated by a signal, exitcode is the negative signal value
+            if proc.exitcode == -signal.SIGKILL:
+                # SIGKILL is most likely an OOM kill
+                raise MemoryError("%s ran out of memory" % proc.name)
+            elif proc.exitcode:
+                raise OSError("%s exited with code %d" % (proc.name, proc.exitcode))
+
         # Partitions are ready. Map.
         mappers = []
         for i in range(self._num_mappers):
@@ -160,6 +170,7 @@ class Job:
                     # TODO: Bail, since results will be unreliable?
                 p = Process(
                         target=Mapper,
+                        name=("Mapper-%d" % i),
                         args=(i, partitions[i], self._work_dir, self._job_module, self._num_reducers))
                 mappers.append(p)
                 p.start()
@@ -167,17 +178,20 @@ class Job:
                 print "Skipping mapper", i, "- no input files to process"
         for m in mappers:
             m.join()
+            checkExitCode(m)
 
         # Mappers are done. Reduce.
         reducers = []
         for i in range(self._num_reducers):
             p = Process(
                     target=Reducer,
+                    name=("Reducer-%d" % i),
                     args=(i, self._work_dir, self._job_module, self._num_mappers))
             reducers.append(p)
             p.start()
         for r in reducers:
             r.join()
+            checkExitCode(r)
 
         # Reducers are done.  Output results.
         to_combine = 1
@@ -333,6 +347,13 @@ class TextContext(Context):
         self._sink.write(str(value))
         self._sink.write(self.record_separator)
 
+    def writecsv(self, values):
+        w = csv.writer(self._sink)
+        w.writerow(values)
+
+    def writeline(self, value):
+        self._sink.write(value)
+        self._sink.write(self.record_separator)
 
 class Mapper:
     def __init__(self, mapper_id, inputs, work_dir, module, partition_count):
@@ -358,7 +379,9 @@ class Mapper:
             for line in input_file["handle"]:
                 line_num += 1
                 try:
-                    key, value = line.split("\t", 1)
+                    # Remove the trailing EOL character(s) before passing to
+                    # the map function.
+                    key, value = line.rstrip('\r\n').split("\t", 1)
                     mapfunc(key, input_file["dimensions"], value, context)
                 except ValueError, e:
                     # TODO: increment "bad line" metrics.
@@ -376,6 +399,7 @@ class Mapper:
             filename = os.path.join(self.work_dir, "cache", input_file["name"])
 
         if filename.endswith(StorageLayout.COMPRESSED_SUFFIX):
+            
             decompress_cmd = [StorageLayout.COMPRESS_PATH] + StorageLayout.DECOMPRESSION_ARGS
             raw_handle = open(filename, "rb")
             input_file["raw_handle"] = raw_handle
@@ -422,20 +446,28 @@ class Reducer:
         if callable(setupreducefunc):
             setupreducefunc(context)
 
+        map_only = False
         if not callable(reducefunc):
-            print "No reduce function (that's ok)"
-        else:
-            collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
-            for i in range(mapper_count):
-                mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
-                # read, group by key, call reducefunc, output
-                input_fd = open(mapper_file, "rb")
-                while True:
-                    try:
-                        key, value = marshal.load(input_fd)
+            print "No reduce function (that's ok). Writing out all the data."
+            map_only = True
+
+        collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
+        for i in range(mapper_count):
+            mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
+            # read, group by key, call reducefunc, output
+            input_fd = open(mapper_file, "rb")
+            while True:
+                try:
+                    key, value = marshal.load(input_fd)
+                    if map_only:
+                        # Just write out each row as we see it
+                        context.write(key, value)
+                    else:
                         collected.collect(key, value)
-                    except EOFError:
-                        break
+                except EOFError:
+                    break
+        if not map_only:
+            # invoke the reduce function on each combined output.
             for k,v in collected.iteritems():
                 reducefunc(k, v, context)
         context.finish()
@@ -471,6 +503,7 @@ def main():
                 parser.print_help()
                 return -1
 
+    args = args.__dict__                
     job = Job(args)
     start = datetime.now()
     exit_code = 0
