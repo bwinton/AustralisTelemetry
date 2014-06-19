@@ -26,58 +26,63 @@ def map(k, d, v, cx):
     countableEventBuckets = []
     customizeBuckets = []
 
-    prefix = sysinfo["OS"] + "&&"
+    prefix = sysinfo["OS"]
+
+    tour_seen = "none"
 
     if "toolbars" in ui:
         toolbars = ui["toolbars"] 
-        if not "menuBarEnabled" in toolbars: #weird incomplete cases
+        if not "menuBarEnabled" in toolbars: #remove weird incomplete cases
           return
-        cx.write(prefix+ "instances", 1)
+        cx.write(prefix+ ",none,instances", 1)
         countableEvents = toolbars.get("countableEvents", {})
         feature_measures = {}
-        #note: simple swaps kept in "kept"
+        #note: simple swaps in "kept"
         feature_measures["features_kept"] = toolbars.get("defaultKept",[])
         feature_measures["features_moved"] = toolbars.get("defaultMoved",[])
         feature_measures["extra_features_added"] = toolbars.get("nondefaultAdded", [])
         feature_measures["features_removed"] = toolbars.get("defaultRemoved", [])
       
+        if "UITour" in ui:
+          for tour in ui["UITour"]["seenPageIDs"]:
+            tour_seen = tour
+            cx.write(prefix + "," + tour + "," + "seenPage-" + tour, 1)
+            #TODO: error checking on more than one tour
+
         for k,v in toolbars.iteritems():
           if k not in ["defaultKept", "defaultMoved", "nondefaultAdded", "defaultRemoved", "countableEvents", "durations"]:
-            cx.write(prefix + k + "--" + str(v), 1)
+            v = str(v)
+            v = v.replace(",", " ") #remove commas in the tab arrays that will mess us up later
+            cx.write(prefix + "," + tour_seen + ","+ k + "-" + str(v), 1)
+
         bucketDurations = defaultdict(list)
         durations = toolbars.get("durations",{}).get("customization",[])
 
-        #durations of customization and viewing tour.
-        #
-        #_DEFAULT_ bucket for everything but tours, which have their
-        #own buckets
         for e in durations:
             #correct for addition of firstrun buckets
             if type(e) is dict:
               bucketDurations[e["bucket"]].append(e["duration"])
+            #if the default bucket is "__DEFAULT__", no tour has been seen
             else:
-              bucketDurations["__DEFAULT__"].append(e)
+              bucketDurations["none"].append(e)
 
-        #otherwise, all times are averaged to add to the overall statistic so
-        #that a single session doesn't overweight in an average
+
         for d,l in bucketDurations.items():
+            bucket = "none" if d == "__DEFAULT__" else d
             for i in l:
-              cx.write(prefix+ "duration_bucket--" + d, i)
+              cx.write(prefix + "," + bucket + "," + "customization_time", i)
 
         #record the locations and movement of the customization items
         #write out entire set for a user(dist), 
         #and also each individual item
         for e,v in feature_measures.items():
             for item in v:
-                cx.write(prefix+ e+"--"+item, 1)
+              cx.write(prefix + "," + tour_seen + "," + e+"-"+item, 1)
 
+        #this will break pre-Australis
         for event_string in enum_paths(countableEvents,[]):
-          cx.write(prefix+"-".join(event_string[:-1]), event_string[-1])
-          cx.write(prefix+"-".join(event_string[1:-1]), event_string[-1])
-
-    if "UITour" in ui:
-      for tour in ui["UITour"]["seenPageIDs"]:
-        cx.write(prefix + "seenPage-" + tour, 1)
+          bucket = "none" if event_string[0] == "__DEFAULT__" else event_string[0]
+          cx.write(prefix+"," + bucket + "," + "-".join(event_string[1:-1]), event_string[-1])
 
   except Exception, e:
     cx.write("ERROR:", e)
@@ -87,5 +92,6 @@ def reduce(k, v, cx):
     for i in set(v):
       cx.write(k, i)
     return
-  cx.write(k + " count", len(v))
-  cx.write(k + " sum", sum(pymap(float,v)))
+
+  cx.write(",".join([k,"count"]), len(v))
+  cx.write(",".join([k,"sum"]), sum(pymap(float,v)))
