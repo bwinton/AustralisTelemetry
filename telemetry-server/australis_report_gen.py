@@ -49,7 +49,7 @@ def generate_filters(args):
     channels = filter(lambda x: args.__dict__[x] is True, chans)
     
     start, end = get_week_endpoints(args.week)
-    print start, end
+
     fltr = {
     "version": 1,
     "dimensions": [
