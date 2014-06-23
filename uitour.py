@@ -93,5 +93,5 @@ def reduce(k, v, cx):
       cx.write(k, i)
     return
 
-  cx.write(",".join([k,"count"]), len(v))
-  cx.write(",".join([k,"sum"]), sum(pymap(float,v)))
+  cx.write(u",".join([k,"count"]), len(v))
+  cx.write(u",".join([k,"sum"]), sum(pymap(float,v)))
