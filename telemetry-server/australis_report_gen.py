@@ -41,6 +41,13 @@ def get_week_endpoints(week_no, year=2014):
 
   return (start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
 
+def get_current_weekno(year=2014):
+  year_start = datetime(year,1,1)
+
+  first_tues = year_start + timedelta(days=((8 - year_start.weekday()) % 7))
+  today = datetime.today()
+  return int((today - first_tues).days / 7) + 1
+
 def curr_version(channel):
   if channel == "nightly":
     channel = "central"
@@ -161,12 +168,19 @@ parser.add_argument("--aurora", action="store_true", help="Use flag to include c
 parser.add_argument("--beta", action="store_true", help="Use flag to include channel")
 parser.add_argument("--release", action="store_true", help="Use flag to include channel")
 parser.add_argument("-v", "--version", help="enter version")
-parser.add_argument("-t", "--tag", help="enter a label to identify the data run", required=True)
+parser.add_argument("-t", "--tag", help="enter a label to identify the data run")
 parser.add_argument("--local-only", action="store_true", dest = "local_only", help="use flag to run using local data")
 
 args = parser.parse_args()
 
 current_dir = sys.path[0]
+
+if not args.tag:
+  if args.week != "current":
+    args.tag = "2014_" + args.week
+  elif args.week == "current":
+    args.tag = "2014_" + str(get_current_weekno())
+
 output_dir = "/".join([current_dir,OUTPUT_DIR_BASE,args.tag]) + "/"
 # proc = subprocess.Popen(["ls","/".join([current_dir,OUTPUT_DIR_BASE,args.tag, PIPE=stdout])])
 # print proc.communicate()
