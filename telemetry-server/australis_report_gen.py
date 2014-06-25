@@ -1,14 +1,5 @@
 #!/usr/bin/python
 
-'''
--default AFTER australis?
-- generate filters
-- generate two run.sh
-- run uitour.py/output, uitour_peruser.py/output_peruser
-- run processoutput/processoutput_peruser
-- generate stats
-'''
-
 import argparse
 import simplejson as json
 import os
@@ -19,10 +10,16 @@ import telemetry.util.timer as timer
 from analysis.process_output import process_output
 from datetime import datetime, timedelta
 from urllib import urlopen
+import subprocess
 
 from mapreduce.job import Job
+try:
+    from boto.s3.connection import S3Connection
+    BOTO_AVAILABLE=True
+except ImportError:
+    BOTO_AVAILABLE=False
 
-FILTER_DIR = "./"
+OUTPUT_DIR_BASE = "../analysis/output"
 
 #weeks start at 1
 def get_week_endpoints(week_no, year=2014):
@@ -45,6 +42,8 @@ def get_week_endpoints(week_no, year=2014):
   return (start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
 
 def curr_version(channel):
+  if channel == "nightly":
+    channel = "central"
   today = datetime.today().date()
   releases_site = urlopen("http://latte.ca/cgi-bin/status.cgi")
   releases = json.loads(releases_site.read())
@@ -59,7 +58,7 @@ def curr_version(channel):
 
 
 #many fields faked out. keep this way for now.
-def generate_filters(args):
+def generate_filters(args, output_file):
     chans = {key: args.__dict__[key] for key in ("nightly", "aurora", "beta", "release")}
     channels = filter(lambda x: args.__dict__[x] is True, chans)
     
@@ -116,15 +115,14 @@ def generate_filters(args):
     }
     ]
     }
-    filterfile = FILTER_DIR + "filter-auto.json"
-    with open(filterfile, "w") as outfile:
+    with open(output_file, "w") as outfile:
         json.dump(fltr, outfile)
 
-    return filterfile
+    return output_file
 
 #many of these args can be exposed at the command line. no need for now.
-def run_mr(filter, output_file):
-  
+def run_mr(filter, output_file, local_only):
+
   args = {
     "job_script" : "../uitour.py",
     "input_filter": filter,
@@ -134,22 +132,15 @@ def run_mr(filter, output_file):
     "work_dir" : "../work",
     "output" : output_file,
     "bucket" : "telemetry-published-v1",
-    "local_only" : True
+    "local_only" : local_only 
   }
 
-
-    # if not args.local_only:
-    #     if not BOTO_AVAILABLE:
-    #         print "ERROR: The 'boto' library is required except in 'local-only' mode."
-    #         print "       You can install it using `sudo pip install boto`"
-    #         parser.print_help()
-    #         return -2
-    #     # If we want to process remote data, some more arguments are required.
-    #     for remote_req in ["bucket"]:
-    #         if not hasattr(args, remote_req) or getattr(args, remote_req) is None:
-    #             print "ERROR:", remote_req, "is a required option"
-    #             parser.print_help()
-    #             return -1
+  if not args["local_only"]:
+      if not BOTO_AVAILABLE:
+          print "ERROR: The 'boto' library is required except in 'local-only' mode."
+          print "       You can install it using `sudo pip install boto`"
+          parser.print_help()
+          return -2
 
   job = Job(args)
   start = datetime.now()
@@ -161,9 +152,8 @@ def run_mr(filter, output_file):
       exit_code = 2
   duration = timer.delta_sec(start)
   print "All done in %.2fs" % (duration)
-  return exit_code
+  return (exit_code, output_file)
 
-#for now, only int vals for version. allow sub-versions in future?
 parser = argparse.ArgumentParser()
 parser.add_argument("-w", "--week", help="enter week number of 2014 to analyze")
 parser.add_argument("--nightly", action="store_true", help="Use flag to include channel")
@@ -171,16 +161,21 @@ parser.add_argument("--aurora", action="store_true", help="Use flag to include c
 parser.add_argument("--beta", action="store_true", help="Use flag to include channel")
 parser.add_argument("--release", action="store_true", help="Use flag to include channel")
 parser.add_argument("-v", "--version", help="enter version")
+parser.add_argument("-t", "--tag", help="enter a label to identify the data run", required=True)
+parser.add_argument("--local-only", action="store_true", dest = "local_only", help="use flag to run using local data")
 
 args = parser.parse_args()
 
-filterfile = generate_filters(args)
-outfile = "./out_test.out"
+current_dir = sys.path[0]
+output_dir = "/".join([current_dir,OUTPUT_DIR_BASE,args.tag]) + "/"
+# proc = subprocess.Popen(["ls","/".join([current_dir,OUTPUT_DIR_BASE,args.tag, PIPE=stdout])])
+# print proc.communicate()
+proc = subprocess.Popen(["mkdir","/".join([current_dir,OUTPUT_DIR_BASE,args.tag])])
+proc.wait()
 
-#TODO: return successful outfile here?
-run_mr(filterfile, outfile)
-
-process_output(open(outfile), "out.csv")
+filterfile = generate_filters(args, output_dir + "filter.json" )
+error, mr_file = run_mr(filterfile, output_dir + "mr_output.csv", args.local_only)
+process_output(open(mr_file), output_dir + "out.csv")
 
 
 
