@@ -4,53 +4,58 @@ post-process what comes out of m/r job
 usage: cat final_data/my_mapreduce_results_pre.out | python process_output.py
 
 input: output from uitour, ex:
-visibleTabs--[221, 1] count	1
-visibleTabs--[221, 1] sum	1.0
-click-builtin-item-alltabs-button-left count	422
+Linux,none,features_kept-bookmarks-menu-button,sum	2.0
+WINNT,bucket_UITour|australis-tour-aurora-29.0a2,click-builtin-item-preferences-button-left,count	1
 
 output: csv w/ header listing
-item,subitem,instances per session,percentage of sessions with occurrence
+osinfo,item,instances per session,percentage of sessions with occurrence
 
 ex:
-bookmarksBarEnabled,False,194609.0,0.5405
-bookmarksBarEnabled,True,165417.0,0.4595
+WINNT,none,bookmarksBarEnabled-False,194609.0,0.5405
+Linux,tour-29,bookmarksBarEnabled-True,165417.0,0.4595
 '''
 
-from collections import defaultdict
-import fileinput
-import operator
-from pprint import pprint as pp
-import sys
+#position data
+PREFIX=0
+BUCKET=1
+ITEM=2
+COUNT=3
 
-features = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-instances = None
 
-for line in fileinput.input():
-    if line.startswith("ERROR"):
-        print >> sys.stderr, line
-    elif (line.startswith("click") or
-          line.startswith("customize") or
-          line.startswith("seenPage")):
-        tokens = line.split("-", 1)
-    elif line.startswith("bucket") or line.startswith("__DEFAULT__"):
-        tokens = line.split("-c", 1)
-        tokens[1] = "c" + tokens[1]
-        del tokens[0]
-        tokens = tokens[0].split("-", 1)
-    else:
-        tokens = line.split("--", 1)
-    category = tokens[0]
-    if not category.startswith("instances"):
-        obj = tokens[1].split(" ", 1)[0]
-        val = tokens[1].split()
-        if val[1] in ("sum", "count"):
-            features[category][obj][val[1]] = float(val[2])
-    else:
-        instances = float(tokens[0].split()[-1])
 
-print "item,subitem,avg. instances per session,pct sessions with occurrence"
-for category, cat_fs in features.iteritems():
-    for f in sorted(cat_fs, key=cat_fs.get, reverse=True):
-        avg = str(round(cat_fs[f]["sum"]/instances, 4))
-        pct = str(round(cat_fs[f]["count"]/instances, 4))
-        print category + "," + f + "," + avg + "," + pct
+def process_output(filecontents, outfile):
+	from collections import defaultdict
+	from pprint import pprint as pp
+	import operator
+	import csv
+
+	counts = defaultdict(lambda: defaultdict(int))
+	instances = {}
+
+	for line in filecontents:
+		if line.startswith("ERROR"):
+			continue
+
+		tokens = line.split(",")
+		tokens[COUNT] = tokens[COUNT].split()
+		if tokens[ITEM] == "instances" and tokens[COUNT][0] == "count":
+			instances[tokens[PREFIX]] = float(tokens[COUNT][1])
+
+		#right now, only look at counts with all fields included
+		counts[tuple(tokens[PREFIX:ITEM+1])][tokens[COUNT][0]] = tokens[COUNT][1]
+
+	with open(outfile, "w") as outfile:
+		csvwriter = csv.writer(outfile)
+		csvwriter.writerow(["sys_info","tour_bucket", "item","instances_per_session","percent_sessions_with_occurrence"])
+		for tup, cts in counts.iteritems():
+			output = list(tup)
+			instances_per_session = round(float(cts["sum"])/instances[tup[PREFIX]], 3)
+			pct_with_occurrence = round(float(cts["count"])/instances[tup[PREFIX]], 3)
+			output.extend([instances_per_session, pct_with_occurrence])
+			csvwriter.writerow(output)
+
+if __name__ == '__main__':
+	import fileinput
+	import sys
+
+	process_output(sys.stdout)
