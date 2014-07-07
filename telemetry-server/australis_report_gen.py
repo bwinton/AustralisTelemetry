@@ -138,7 +138,7 @@ def run_mr(filter, output_file, local_only):
     "data_dir" : "../work/cache",
     "work_dir" : "../work",
     "output" : output_file,
-    "bucket" : "telemetry-published-v1",
+    "bucket" : "telemetry-published-v2",
     "local_only" : local_only 
   }
 
@@ -190,8 +190,3 @@ proc.wait()
 filterfile = generate_filters(args, output_dir + "filter.json" )
 error, mr_file = run_mr(filterfile, output_dir + "mr_output.csv", args.local_only)
 process_output(open(mr_file), output_dir + "out.csv")
-
-
-
-  
-
