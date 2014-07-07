@@ -138,7 +138,7 @@ def run_mr(filter, output_file, local_only):
     "data_dir" : "../work/cache",
     "work_dir" : "../work",
     "output" : output_file,
-    "bucket" : "telemetry-published-v1",
+    "bucket" : "telemetry-published-v2",
     "local_only" : local_only
   }
 
