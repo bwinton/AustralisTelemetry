@@ -3,8 +3,8 @@
 cd /home/ubuntu
 
 # Install a few dependencies
-sudo apt-get -y install xz-utils python-pip git
-sudo pip install --upgrade boto awscli
+sudo apt-get -y install xz-utils python-pip git python-dev
+sudo pip install --upgrade boto awscli simplejson
 
 # Get users ssh key
 python - << END
@@ -15,9 +15,37 @@ k = b.get_key('{{ ssh_key }}')
 k.get_contents_to_filename('/home/ubuntu/user_key.pub')
 END
 
+
+{% if ephemeral_map %}
+# RAID0 Configuration:
+{% set raid_devices = ephemeral_map.keys()|sort %}
+{% set device_list = " ".join(raid_devices) %}
+export DEBIAN_FRONTEND=noninteractive; apt-get --yes install mdadm xfsprogs
+umount /mnt
+yes | mdadm --create /dev/md0 --level=0 -c64 --raid-devices={{ raid_devices|length }} {{ device_list }}
+echo 'DEVICE {{ device_list }}' >> /etc/mdadm/mdadm.conf
+mdadm --detail --scan >> /etc/mdadm/mdadm.conf
+mkfs.xfs /dev/md0
+mount /dev/md0 /mnt
+{% endif %}
+
 # Setup users ssh_key
 cat /home/ubuntu/user_key.pub >> /home/ubuntu/.ssh/authorized_keys
 chmod 600 /home/ubuntu/.ssh/authorized_keys
+
+# Set the default AWS region
+if [ ! -d /home/ubuntu/.aws ]; then
+  sudo -u ubuntu mkdir /home/ubuntu/.aws
+fi
+if [ ! -f /home/ubuntu/.aws/config ]; then
+  sudo -u ubuntu echo -e "[default]\nregion = {{ aws_region }}" > /home/ubuntu/.aws/config
+fi
+
+# Make telemetry work dir
+if [ ! -d /mnt/telemetry ]; then
+  mkdir /mnt/telemetry
+fi
+chown ubuntu:ubuntu /mnt/telemetry
 
 # Setup the motd
 sudo cat >/etc/motd <<END

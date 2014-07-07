@@ -8,6 +8,8 @@ from user import User, AnonymousUser
 from boto.ec2 import connect_to_region as ec2_connect
 from boto.ses import connect_to_region as ses_connect
 from boto.s3 import connect_to_region as s3_connect
+from boto.ec2.blockdevicemapping import BlockDeviceType
+from boto.ec2.blockdevicemapping import BlockDeviceMapping
 from urlparse import urljoin
 from uuid import uuid4
 from sqlalchemy import create_engine, MetaData
@@ -70,6 +72,7 @@ def initialize_db(db):
         Column("commandline",           String,      nullable=False),
         Column("data_bucket",           String(200), nullable=False),
         Column("output_dir",            String(100), nullable=False),
+        Column("output_visibility",     String(10),  nullable=False),
         Column("schedule_minute",       String(20),  nullable=False),
         Column("schedule_hour",         String(20),  nullable=False),
         Column("schedule_day_of_month", String(20),  nullable=False),
@@ -89,6 +92,7 @@ def initialize_db(db):
     #     commandline           VARCHAR NOT NULL,
     #     data_bucket           VARCHAR(200) NOT NULL,
     #     output_dir            VARCHAR(100) NOT NULL,
+    #     output_visibility     VARCHAR(10) NOT NULL,
     #     schedule_minute       VARCHAR(20) NOT NULL,
     #     schedule_hour         VARCHAR(20) NOT NULL,
     #     schedule_day_of_month VARCHAR(20) NOT NULL,
@@ -137,6 +141,29 @@ def get_jobs(owner=None):
         raise
     result.close()
 
+def get_job_logs(job):
+    # Sort logs in descending order (oldest first)
+    return sorted(get_job_files(job, "logs"), key=lambda f: f["url"], reverse=True)
+
+def get_job_files(job, path_snippet):
+    job_files = []
+    # TODO: detect private jobs and bail?
+    try:
+        # find the S3 bucket
+        data_bucket = s3.get_bucket(job.data_bucket, validate = False)
+        if data_bucket:
+            # calculate the log path
+            s3path = "{0}/{1}/".format(job.name, path_snippet)
+            urlbase = "https://s3-us-west-2.amazonaws.com"
+            urlprefixlen = len(urlbase) + len(job.data_bucket) + len(s3path) + 2
+            for key in data_bucket.list(prefix=s3path):
+                url = "{0}/{1}/{2}".format(urlbase, job.data_bucket, key.name)
+                title = url[urlprefixlen:]
+                job_files.append({"url": url, "title": title})
+    except Exception, e:
+        job_files.append({"url": "#", "title": "Error fetching job files: {}".format(e)})
+    return job_files
+
 def get_job(name=None, job_id=None):
     db = get_db()
     table = db['metadata'].tables['scheduled_jobs']
@@ -156,7 +183,6 @@ def delete_job(job_id, owner):
     return result
 
 def job_exists(name=None, job_id=None):
-
     db = get_db()
     table = db['metadata'].tables['scheduled_jobs']
     if name is not None:
@@ -176,15 +202,18 @@ def update_configs(jobs=None):
         for j in get_jobs():
             jobs.append(j)
     for job in jobs:
+        # Should be either:
+        #   telemetry-public-analysis-worker or
+        #   telemetry-private-analysis-worker
+        iam_role = "telemetry-{}-analysis-worker".format(job.output_visibility)
         config = {
             "ssl_key_name": "mreid",
             "base_dir": "/mnt/telemetry",
-            # TODO: move this to config.py
-            "instance_type": "c3.2xlarge",
-            "image": "ami-0e98fe3e",
-            # TODO: ssh-only securiry group
+            "instance_type": app.config['INSTANCE_TYPE'],
+            "image": "ami-9fdca0af", # -> telemetry-worker-hvm-20140626
+            # TODO: ssh-only security group
             "security_groups": ["telemetry"],
-            "iam_role": "telemetry-public-analysis-worker",
+            "iam_role": iam_role,
             "region": app.config['AWS_REGION'],
             "shutdown_behavior": "terminate",
             "name": "telemetry-analysis-{0}".format(job['name']),
@@ -199,6 +228,7 @@ def update_configs(jobs=None):
             "skip_ssh": True,
             "skip_bootstrap": True,
             "job_name": job['name'],
+            "job_owner": job['owner'],
             "job_timeout_minutes": job['timeout_minutes'],
             "job_code_uri": job['code_uri'],
             "job_commandline": job['commandline'],
@@ -234,17 +264,20 @@ def upload_code(job_name, code_file):
         return e.message
     return None
 
-def get_required_int(request, field, label, min_value=0, max_value=100):
+def get_required_string(request, field, label):
     value = request.form[field]
     if value is None or value.strip() == '':
         raise ValueError(label + " is required")
-    else:
-        try:
-            value = int(value)
-            if value < min_value or value > max_value:
-                raise ValueError("{0} should be between {1} and {2}".format(label, min_value, max_value))
-        except ValueError:
-            raise ValueError("{0} should be an int between {1} and {2}".format(label, min_value, max_value))
+    return value
+
+def get_required_int(request, field, label, min_value=0, max_value=100):
+    value = get_required_string(request, field, label)
+    try:
+        value = int(value)
+        if value < min_value or value > max_value:
+            raise ValueError("{0} should be between {1} and {2}".format(label, min_value, max_value))
+    except ValueError:
+        raise ValueError("{0} should be an int between {1} and {2}".format(label, min_value, max_value))
     return value
 
 def hour_to_time(hour):
@@ -280,6 +313,7 @@ def job_to_form(job):
         "commandline": "commandline",
         "data-bucket": "data-bucket",
         "output_dir": "output-dir",
+        "output_visibility": "output-visibility",
         "schedule_hour": "schedule-time-of-day"
     }
 
@@ -352,14 +386,9 @@ def schedule_job(errors=None, values=None):
 
     return render_template('schedule.html', jobs=jobs, errors=errors, values=values)
 
-@app.route("/schedule/new", methods=["POST"])
-@login_required
-def create_scheduled_job():
-    # Check that the user logged in is also authorized to do this
-    if not current_user.is_authorized():
-        return login_manager.unauthorized()
-
+def validate_job_form(request, is_update=True, old_job=None):
     errors = {}
+    job_meta = {}
     for f in ['job-name', 'commandline', 'output-dir',
               'schedule-frequency', 'schedule-time-of-day', 'timeout']:
         val = request.form[f]
@@ -406,17 +435,117 @@ def create_scheduled_job():
     except ValueError, e:
         errors['timeout'] = e.message
 
-    # Check for code-tarball
+    # Check if this is a public or private job:
+    try:
+        visibility = get_required_string(request, 'output-visibility',
+                "Output Visibility").lower().strip()
+        if visibility == 'public':
+            data_bucket = app.config['PUBLIC_DATA_BUCKET']
+        elif visibility == 'private':
+            data_bucket = app.config['PRIVATE_DATA_BUCKET']
+        else:
+            errors['output-visibility'] = "Invalid visibility value '{}'. Use 'public' or 'private'.".format(visibility)
+    except ValueError, e:
+        errors['output-visibility'] = e.message
+
+    job_name = request.form['job-name']
+    for bad_char in ['"', "'", '\\']:
+        if bad_char in job_name:
+            errors['job-name'] = "Job name cannot contain quote characters or backslashes"
+            break
+
     if request.files['code-tarball']:
         filename = request.files['code-tarball'].filename
         if not (filename.endswith(".tar.gz") or filename.endswith(".tgz")):
             errors['code-tarball'] = "Code file must be in .tar.gz or .tgz format"
-    else:
-        errors['code-tarball'] = "File is required (.tar.gz or .tgz)"
 
-    # Check if job_name is already in use
-    if job_exists(name=request.form['job-name']):
-        errors['job-name'] = "The name '{}' is already in use. Choose another name.".format(request.form['job-name'])
+    if is_update:
+        # This is an "Update" request:
+        # You may update code-tarball *or* code-uri, but not both. Otherwise, what
+        # should we do with the other one?
+        if request.files['code-tarball']:
+            if request.form['code-uri'] and request.form['code-uri'] != old_job['code_uri']:
+                errors['code-uri'] = "Cannot change code-uri and upload a new Code Tarball at the same time"
+        elif request.form['code-uri']:
+            if request.form['code-uri'] != old_job['code_uri']:
+                # Check if the Code URI exists within the expected bucket.
+                if request.form['code-uri'].startswith("s3://" + app.config['CODE_BUCKET'] + "/jobs/"):
+                    code_key_path = request.form['code-uri'][len(app.config['CODE_BUCKET']) + 6:]
+                    try:
+                        code_key = code_bucket.get_key(code_key_path)
+                        if code_key is None or not code_key.exists():
+                            errors['code-uri'] = "Specified Code URI does not exist"
+                    except Exception, e:
+                        errors['code-uri'] = e.message
+                else:
+                    errors['code-uri'] = "Code URI must begin with 's3://{0}/jobs/'".format(app.config['CODE_BUCKET'])
+            job_meta["code_s3path"] = request.form['code-uri']
+        else:
+            # Also, they can't both be missing, otherwise we have no job code.
+            errors['code-tarball'] = "Code Tarball or S3 Code URI is required (.tar.gz or .tgz)"
+            errors['code-uri'] = errors['code-tarball']
+
+        if request.form['job-name'] != old_job['name']:
+            errors['job-name'] = "Don't change the job name, that is confusing. " \
+                "Should be '{}'. To change a job name, delete and " \
+                "recreate it.".format(old_job['name'])
+    else:
+        # This is a "Create" request:
+        # Check for code-tarball
+        if not request.files['code-tarball']:
+            errors['code-tarball'] = "File is required (.tar.gz or .tgz)"
+
+        # Check if job_name is already in use
+        if job_exists(name=request.form['job-name']):
+            errors['job-name'] = "The name '{}' is already in use. Choose another name.".format(request.form['job-name'])
+
+    # If we didn't already set the code path from the 'code-uri' form param:
+    if "code_s3path" not in job_meta:
+        job_meta["code_s3path"] = "s3://{0}/jobs/{1}/{2}".format(
+            app.config['CODE_BUCKET'], request.form["job-name"],
+            request.files["code-tarball"].filename)
+
+    job_meta["data_s3path"] = "s3://{0}/{1}/data/".format(data_bucket,
+        request.form["job-name"])
+
+    # Last bit is the command to execute.
+    # This is just a placeholder - the real command is added when we update
+    # the crontab.
+    cron_bits.append(request.form['commandline'])
+    job_meta["cron_spec"] = " ".join([str(c) for c in cron_bits])
+    job_meta["frequency"] = frequency
+    job_meta["job_dow"] = display_dow(day_of_week)
+    job_meta["job_dom"] = display_dom(day_of_month)
+
+    job = {
+        "owner": current_user.email,
+        "name": request.form['job-name'],
+        "timeout_minutes": timeout,
+        "code_uri": job_meta["code_s3path"],
+        "commandline": request.form['commandline'],
+        "data_bucket": data_bucket,
+        "output_dir": request.form['output-dir'],
+        "output_visibility": visibility,
+        "schedule_minute": cron_bits[CRON_IDX_MIN],
+        "schedule_hour": cron_bits[CRON_IDX_HOUR],
+        "schedule_day_of_month": cron_bits[CRON_IDX_DOM],
+        "schedule_month": cron_bits[CRON_IDX_MON],
+        "schedule_day_of_week": cron_bits[CRON_IDX_DOW]
+    }
+
+    if old_job:
+        job['id'] = old_job['id']
+
+    return job, job_meta, errors
+
+@app.route("/schedule/new", methods=["POST"])
+@login_required
+def create_scheduled_job():
+    # Check that the user logged in is also authorized to do this
+    if not current_user.is_authorized():
+        return login_manager.unauthorized()
+
+    job, job_meta, errors = validate_job_form(request, is_update=False)
 
     # If there were any errors, stop and re-display the form.
     # It's only polite to render the form with the previously-supplied
@@ -430,27 +559,6 @@ def create_scheduled_job():
         errors["code-tarball"] = err
         return schedule_job(errors, request.form)
 
-    # Now do it!
-    code_s3path = "s3://{0}/jobs/{1}/{2}".format(app.config['CODE_BUCKET'],
-        request.form["job-name"], request.files["code-tarball"].filename)
-    data_s3path = "s3://{0}/{1}/data/".format(app.config['PUBLIC_DATA_BUCKET'],
-        request.form["job-name"])
-
-    job = {
-        "owner": current_user.email,
-        "name": request.form['job-name'],
-        "timeout_minutes": timeout,
-        "code_uri": code_s3path,
-        "commandline": request.form['commandline'],
-        "data_bucket": app.config['PUBLIC_DATA_BUCKET'],
-        "output_dir": request.form['output-dir'],
-        "schedule_minute": cron_bits[CRON_IDX_MIN],
-        "schedule_hour": cron_bits[CRON_IDX_HOUR],
-        "schedule_day_of_month": cron_bits[CRON_IDX_DOM],
-        "schedule_month": cron_bits[CRON_IDX_MON],
-        "schedule_day_of_week": cron_bits[CRON_IDX_DOW]
-    }
-
     result = insert_job(job)
     if result.inserted_primary_key > 0:
         print "Inserted job id", result.inserted_primary_key
@@ -460,23 +568,18 @@ def create_scheduled_job():
         update_configs(jobs)
         update_crontab(jobs)
 
-    # Last bit is the command to execute.
-    # This is just a placeholder - the real command is added when we update
-    # the crontab.
-    cron_bits.append("jobs/run.sh '{0}'".format(result.inserted_primary_key))
-
     return render_template('schedule_create.html',
         result = result,
-        code_s3path = code_s3path,
-        data_s3path = data_s3path,
-        commandline = request.form['commandline'],
-        output_dir = request.form['output-dir'],
-        job_frequency = frequency,
-        job_time = hour_to_time(time_of_day),
-        job_dow = display_dow(day_of_week),
-        job_dom = display_dom(day_of_month),
-        job_timeout = timeout,
-        cron_spec = " ".join([str(c) for c in cron_bits])
+        code_s3path = job_meta["code_s3path"],
+        data_s3path = job_meta["data_s3path"],
+        commandline = job["commandline"],
+        output_dir = job["output_dir"],
+        job_frequency = job_meta["frequency"],
+        job_time = hour_to_time(job["schedule_hour"]),
+        job_dow = job_meta["job_dow"],
+        job_dom = job_meta["job_dom"],
+        job_timeout = job["timeout_minutes"],
+        cron_spec = job_meta["cron_spec"]
     )
 
 @app.route("/schedule/edit/<job_id>", methods=["GET","POST"])
@@ -489,132 +592,34 @@ def edit_scheduled_job(job_id):
     if request.method != 'GET' and request.method != 'POST':
         return "Unsupported method: {0}".format(request.method), 405
 
-    job = get_job(job_id=job_id)
-    if job is None:
+    old_job = get_job(job_id=job_id)
+    if old_job is None:
         return "No such job {0}".format(job_id), 404
-    elif job['owner'] != current_user.email:
+    elif old_job['owner'] != current_user.email:
         return "Can't edit job {0}".format(job_id), 401
 
     if request.method == 'GET':
         # Show job details.
-        return render_template("schedule.html", values=job_to_form(job))
+        return render_template("schedule.html", values=job_to_form(old_job))
     # else: request.method == 'POST'
     # update this job's details
     if request.form['job-id'] != job_id:
         return "Mismatched job id", 400
 
-    errors = {}
-    for f in ['job-name', 'commandline', 'output-dir',
-              'schedule-frequency', 'schedule-time-of-day', 'timeout']:
-        val = request.form[f]
-        if val is None or val.strip() == '':
-            errors[f] = "This field is required"
-
-    time_of_day = -1
-    try:
-        time_of_day = get_required_int(request, 'schedule-time-of-day',
-                "Time of Day", max_value=23)
-    except ValueError, e:
-        errors['schedule-time-of-day'] = e.message
-
-    frequency = request.form['schedule-frequency'].strip()
-    # m h  dom mon dow   command
-    cron_bits = [0, time_of_day]
-    day_of_week = None
-    day_of_month = None
-    if frequency == 'weekly':
-        # day of week is required
-        try:
-            day_of_week = get_required_int(request, 'schedule-day-of-week',
-                    "Day of Week", max_value=6)
-            cron_bits.extend(['*', '*', day_of_week])
-        except ValueError, e:
-            errors['schedule-day-of-week'] = e.message
-    elif frequency == 'monthly':
-        # day of month is required
-        try:
-            day_of_month = get_required_int(request, 'schedule-day-of-month',
-                    "Day of Month", max_value=31)
-            cron_bits.extend([day_of_month, '*', '*'])
-        except ValueError, e:
-            errors['schedule-day-of-month'] = e.message
-    elif frequency != 'daily':
-        # incoming value is bogus.
-        errors['schedule-frequency'] = "Pick one of the values in the list"
-    else:
-        cron_bits.extend(['*', '*', '*'])
-
-    try:
-        timeout = get_required_int(request, 'timeout',
-                "Job Timeout", max_value=24*60)
-    except ValueError, e:
-        errors['timeout'] = e.message
-
-    # You may update code-tarball *or* code-uri, but not both. Otherwise, what
-    # should we do with the other one?
-    if request.files['code-tarball']:
-        filename = request.files['code-tarball'].filename
-        if not (filename.endswith(".tar.gz") or filename.endswith(".tgz")):
-            errors['code-tarball'] = "Code file must be in .tar.gz or .tgz format"
-        if request.form['code-uri'] and request.form['code-uri'] != job['code_uri']:
-            errors['code-uri'] = "Cannot change code-uri and upload a new Code Tarball at the same time"
-    elif request.form['code-uri']:
-        if request.form['code-uri'] != job['code_uri']:
-            # Check if the Code URI exists within the expected bucket.
-            if request.form['code-uri'].startswith("s3://" + app.config['CODE_BUCKET'] + "/jobs/"):
-                code_key_path = request.form['code-uri'][len(app.config['CODE_BUCKET']) + 6:]
-                try:
-                    code_key = code_bucket.get_key(code_key_path)
-                    if code_key is None or not code_key.exists():
-                        errors['code-uri'] = "Specified Code URI does not exist"
-                except Exception, e:
-                    errors['code-uri'] = e.message
-            else:
-                errors['code-uri'] = "Code URI must begin with 's3://{0}/jobs/'".format(app.config['CODE_BUCKET'])
-    else:
-        # Also, they can't both be missing, otherwise we have no job code.
-        errors['code-tarball'] = "Code Tarball or S3 Code URI is required (.tar.gz or .tgz)"
-        errors['code-uri'] = errors['code-tarball']
-
-    if request.form['job-name'] != job['name']:
-        errors['job-name'] = "Don't change the job name, that is confusing. " \
-            "Should be '{}'. To change a job name, delete and " \
-            "recreate it.".format(job['name'])
+    new_job, job_meta, errors = validate_job_form(request, is_update=True, old_job=old_job)
 
     # If there were any errors, stop and re-display the form.
     if errors:
         return render_template("schedule.html", values=request.form, errors=errors)
 
+    # Upload code if need be:
     if request.files['code-tarball']:
         err = upload_code(request.form["job-name"], request.files["code-tarball"])
         if err is not None:
             errors["code-tarball"] = err
             return render_template("schedule.html", values=request.form, errors=errors)
-        code_s3path = "s3://{0}/jobs/{1}/{2}".format(app.config['CODE_BUCKET'],
-            request.form["job-name"], request.files["code-tarball"].filename)
-    else:
-        code_s3path = request.form['code-uri']
 
-    data_s3path = "s3://{0}/{1}/data/".format(app.config['PUBLIC_DATA_BUCKET'],
-        request.form["job-name"])
-
-    job = {
-        "id": job_id,
-        "owner": current_user.email,
-        "name": request.form['job-name'],
-        "timeout_minutes": timeout,
-        "code_uri": code_s3path,
-        "commandline": request.form['commandline'],
-        "data_bucket": app.config['PUBLIC_DATA_BUCKET'],
-        "output_dir": request.form['output-dir'],
-        "schedule_minute": cron_bits[CRON_IDX_MIN],
-        "schedule_hour": cron_bits[CRON_IDX_HOUR],
-        "schedule_day_of_month": cron_bits[CRON_IDX_DOM],
-        "schedule_month": cron_bits[CRON_IDX_MON],
-        "schedule_day_of_week": cron_bits[CRON_IDX_DOW]
-    }
-
-    result = update_job(job)
+    result = update_job(new_job)
 
     if result.rowcount > 0:
         print "Updated job id", job_id
@@ -624,23 +629,18 @@ def edit_scheduled_job(job_id):
         update_configs(jobs)
         update_crontab(jobs)
 
-    # Last bit is the command to execute.
-    # This is just a placeholder - the real command is added when we update
-    # the crontab.
-    cron_bits.append("jobs/run.sh '{0}'".format(job_id))
-
     return render_template('schedule_create.html',
         result = result,
-        code_s3path = code_s3path,
-        data_s3path = data_s3path,
-        commandline = request.form['commandline'],
-        output_dir = request.form['output-dir'],
-        job_frequency = frequency,
-        job_time = hour_to_time(time_of_day),
-        job_dow = display_dow(day_of_week),
-        job_dom = display_dom(day_of_month),
-        job_timeout = timeout,
-        cron_spec = " ".join([str(c) for c in cron_bits])
+        code_s3path = job_meta["code_s3path"],
+        data_s3path = job_meta["data_s3path"],
+        commandline = new_job["commandline"],
+        output_dir = new_job["output_dir"],
+        job_frequency = job_meta["frequency"],
+        job_time = hour_to_time(new_job["schedule_hour"]),
+        job_dow = job_meta["job_dow"],
+        job_dom = job_meta["job_dom"],
+        job_timeout = new_job["timeout_minutes"],
+        cron_spec = job_meta["cron_spec"]
     )
 
 @app.route("/schedule/delete/<job_id>", methods=["POST","GET","DELETE"])
@@ -662,6 +662,41 @@ def delete_scheduled_job(job_id):
             update_crontab()
         return render_template('schedule_delete.html', result=result, job=job)
     return "Can't delete job {0}".format(job_id), 401
+
+@app.route("/schedule/logs/<job_id>", methods=["GET"])
+@login_required
+def view_job_logs(job_id):
+    # Check that the user logged in is also authorized to do this
+    if not current_user.is_authorized():
+        return login_manager.unauthorized()
+
+    job = get_job(job_id=job_id)
+    if job is None:
+        return "No such job {0}".format(job_id), 404
+    elif job['owner'] == current_user.email:
+        # OK, this job is yours. Time to dig up the logs.
+        logs = get_job_logs(job)
+
+        # TODO: Add a "<delete>" link
+        #       Add a "<delete all logs>" link
+        return render_template('schedule_files.html', name="log", files=logs, job=job)
+    return "Can't view logs for job {0}".format(job_id), 401
+
+@app.route("/schedule/data/<job_id>", methods=["GET"])
+@login_required
+def view_job_data(job_id):
+    # Check that the user logged in is also authorized to do this
+    if not current_user.is_authorized():
+        return login_manager.unauthorized()
+
+    job = get_job(job_id=job_id)
+    if job is None:
+        return "No such job {0}".format(job_id), 404
+    elif job['owner'] == current_user.email:
+        # OK, this job is yours. Time to dig up the logs.
+        files = get_job_files(job, "data")
+        return render_template('schedule_files.html', name="data", files=files, job=job)
+    return "Can't view data for job {0}".format(job_id), 401
 
 @app.route("/worker", methods=["GET"])
 @login_required
@@ -694,7 +729,7 @@ def spawn_worker_instance():
     # Bug 961200: Check that a proper OpenSSH public key was uploaded.
     # It should start with "ssh-rsa AAAAB3"
     pubkey = request.files['public-ssh-key'].read()
-    if not pubkey.startswith("ssh-rsa AAAAB3"):
+    if not pubkey.startswith("ssh-rsa AAAAB3") and not pubkey.startswith("ssh-dss AAAAB3"):
         errors['public-ssh-key'] = "Supplied file does not appear to be a valid OpenSSH public key."
 
     if errors:
@@ -704,18 +739,27 @@ def spawn_worker_instance():
     sshkey = bucket.new_key("keys/%s.pub" % request.form['token'])
     sshkey.set_contents_from_string(pubkey)
 
+    ephemeral = app.config.get("EPHEMERAL_MAP", None)
     # Create
     boot_script = render_template('boot-script.sh',
         aws_region          = app.config['AWS_REGION'],
         temporary_bucket    = app.config['TEMPORARY_BUCKET'],
-        ssh_key             = sshkey.key
+        ssh_key             = sshkey.key,
+        ephemeral_map       = ephemeral
     )
+
+    mapping = None
+    if ephemeral:
+        mapping = BlockDeviceMapping()
+        for device, eph_name in ephemeral.iteritems():
+            mapping[device] = BlockDeviceType(ephemeral_name=eph_name)
 
     # Create EC2 instance
     reservation = ec2.run_instances(
-        image_id                                = 'ami-ace67f9c',
+        image_id                                = 'ami-ace67f9c', # ubuntu/images/ebs/ubuntu-saucy-13.10-amd64-server-20131015
         security_groups                         = app.config['SECURITY_GROUPS'],
         user_data                               = boot_script,
+        block_device_map                        = mapping,
         instance_type                           = app.config['INSTANCE_TYPE'],
         instance_initiated_shutdown_behavior    = 'terminate',
         client_token                            = request.form['token'],

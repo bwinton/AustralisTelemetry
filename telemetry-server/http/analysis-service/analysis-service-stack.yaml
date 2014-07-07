@@ -58,6 +58,11 @@ Parameters:
     Type:                     String
     Default:                   telemetry-public-analysis
 
+  privateDataBucket:
+    Description:              Bucket in which to publish private analysis results
+    Type:                     String
+    Default:                   telemetry-private-analysis
+
   databaseURL:
     Description:              Database Connection URL
     Type:                     String
@@ -189,7 +194,7 @@ Resources:
               "        -o DPkg::Options::=--force-confold \\\n",
               "        install $@\n",
               "}\n",
-              "install python-pip git python-psycopg2 python-dateutil python-dev nginx\n",
+              "install python-pip git python-psycopg2 python-dateutil python-dev nginx jq\n",
               "pip install --upgrade boto fabric flask flask-login simplejson sqlalchemy uwsgi\n",
               "pip install git+https://github.com/garbados/flask-browserid.git\n",
               "cd /home/ubuntu\n",
@@ -215,6 +220,7 @@ Resources:
               "echo \"TEMPORARY_BUCKET = '", {Ref: temporaryBucket} , "'\" >> config.py\n",
               "echo \"CODE_BUCKET = '", {Ref: sourcesBucket} , "'\" >> config.py\n",
               "echo \"PUBLIC_DATA_BUCKET = '", {Ref: publicDataBucket} , "'\" >> config.py\n",
+              "echo \"PRIVATE_DATA_BUCKET = '", {Ref: privateDataBucket} , "'\" >> config.py\n",
               "echo \"DB_URL = '", {Ref: databaseURL} , "'\" >> config.py\n",
               "echo \"DEBUG = False\" >> config.py\n",
               "echo 'server {' > /etc/nginx/sites-enabled/default\n",
@@ -249,7 +255,7 @@ Resources:
     # Support Rolling updates if/when we roll out changes
     UpdatePolicy:
         AutoScalingRollingUpdate:
-          MinInstancesInService: "1"
+          MinInstancesInService: "0"
           MaxBatchSize: "1"
           PauseTime: PT2M
 
@@ -279,7 +285,7 @@ Resources:
               - 'sts:AssumeRole'
       Path:                   /telemetry/analysis/worker-instance/
       Policies:
-        # Grant read access to telemetry-published-v1
+        # Grant read access to telemetry-published-v2
         - PolicyName:         telemetryPublishedWorkerAccess
           PolicyDocument:
             Statement:
@@ -288,8 +294,8 @@ Resources:
                   - 's3:ListBucket'
                   - 's3:GetObject'
                 Resource:
-                  - 'arn:aws:s3:::telemetry-published-v1'
-                  - 'arn:aws:s3:::telemetry-published-v1/*'
+                  - 'arn:aws:s3:::telemetry-published-v2'
+                  - 'arn:aws:s3:::telemetry-published-v2/*'
         # Grant access to read from temporary bucket, we store SSH keys here
         - PolicyName:         getObjectTemporaryBucketPolicy
           PolicyDocument:

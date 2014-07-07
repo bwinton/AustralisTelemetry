@@ -26,7 +26,7 @@
     "PublishedBucketName": {
       "Description": "The name of the S3 bucket in which to store published data",
       "Type":        "String",
-      "Default":     "telemetry-published-v1"
+      "Default":     "telemetry-published-v2"
     },
     "WebServerInstanceType": {
       "Description": "Type of EC2 instance to launch for HTTP nodes",
@@ -42,12 +42,12 @@
 
   "Mappings": {
     "Region2WebServerAMI": {
-      "us-west-2": { "AMIpv": "ami-00630d30" }
+      "us-west-2": { "AMIpv": "ami-e9dca0d9" }
     },
     "Region2ProcessIncomingAMI": {
       "us-west-2": {
-        "AMIpv":  "ami-00630d30",
-        "AMIhvm": "ami-12630d22"
+        "AMIpv":  "ami-e9dca0d9",
+        "AMIhvm": "ami-e5dca0d5"
       }
     }
   },
@@ -364,7 +364,7 @@
           "yes | mdadm --create /dev/md0 --level=0 -c64 --raid-devices=4 /dev/xvdb /dev/xvdc /dev/xvdd /dev/xvde",
           "echo 'DEVICE /dev/xvdb /dev/xvdc /dev/xvdd /dev/xvde' >> /etc/mdadm/mdadm.conf",
           "mdadm --detail --scan >> /etc/mdadm/mdadm.conf",
-          "mkfs.ext3 -T largefile /dev/md0",
+          "mkfs.xfs /dev/md0",
           "# pause briefly to let md0 get ready",
           "sleep 3",
           "mkdir -p /mnt",
@@ -547,7 +547,7 @@
           "yes | mdadm --create /dev/md0 --level=0 -c64 --raid-devices=2 /dev/xvdb /dev/xvdc",
           "echo 'DEVICE /dev/xvdb /dev/xvdc' >> /etc/mdadm/mdadm.conf",
           "mdadm --detail --scan >> /etc/mdadm/mdadm.conf",
-          "mkfs.ext3 -T largefile /dev/md0",
+          "mkfs.xfs /dev/md0",
           "# pause briefly to let md0 get ready",
           "sleep 3",
           "mkdir -p /mnt",

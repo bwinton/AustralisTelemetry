@@ -21,6 +21,8 @@ import telemetry.util.s3 as s3util
 import telemetry.util.timer as timer
 import subprocess
 from subprocess import Popen, PIPE
+import signal
+import cProfile
 try:
     from boto.s3.connection import S3Connection
     BOTO_AVAILABLE=True
@@ -49,37 +51,38 @@ class Job:
 
     def __init__(self, config):
         # Sanity check args.
-        if config.num_mappers <= 0:
+        if config.get("num_mappers") <= 0:
             raise ValueError("Number of mappers must be greater than zero")
-        if config.num_reducers <= 0:
+        if config.get("num_reducers") <= 0:
             raise ValueError("Number of reducers must be greater than zero")
-        if not os.path.isdir(config.data_dir):
+        if not os.path.isdir(config.get("data_dir")):
             raise ValueError("Data dir must be a valid directory")
-        if not os.path.isdir(config.work_dir):
+        if not os.path.isdir(config.get("work_dir")):
             raise ValueError("Work dir must be a valid directory")
-        if not os.path.isfile(config.job_script):
+        if not os.path.isfile(config.get("job_script", "")):
             raise ValueError("Job script must be a valid python file")
-        if not os.path.isfile(config.input_filter):
+        if not os.path.isfile(config.get("input_filter")):
             raise ValueError("Input filter must be a valid json file")
 
-        self._input_dir = config.data_dir
+        self._input_dir = config.get("data_dir")
         if self._input_dir[-1] == os.path.sep:
             self._input_dir = self._input_dir[0:-1]
-        self._work_dir = config.work_dir
-        self._input_filter = TelemetrySchema(json.load(open(config.input_filter)))
+        self._work_dir = config.get("work_dir")
+        self._input_filter = TelemetrySchema(json.load(open(config.get("input_filter"))))
         self._allowed_values = self._input_filter.sanitize_allowed_values()
-        self._output_file = config.output
-        self._num_mappers = config.num_mappers
-        self._num_reducers = config.num_reducers
-        self._local_only = config.local_only
-        self._bucket_name = config.bucket
-        self._aws_key = config.aws_key
-        self._aws_secret_key = config.aws_secret_key
-        modulefd = open(config.job_script)
+        self._output_file = config.get("output")
+        self._num_mappers = config.get("num_mappers")
+        self._num_reducers = config.get("num_reducers")
+        self._local_only = config.get("local_only")
+        self._bucket_name = config.get("bucket")
+        self._aws_key = config.get("aws_key")
+        self._aws_secret_key = config.get("aws_secret_key")
+        self._profile = config.get("profile")
+        modulefd = open(config.get("job_script"))
         # let the job script import additional modules under its path
-        sys.path.append(os.path.dirname(config.job_script))
+        sys.path.append(os.path.dirname(config.get("job_script")))
         ## Lifted from FileDriver.py in jydoop.
-        self._job_module = imp.load_module("telemetry_job", modulefd, config.job_script, ('.py', 'U', 1))
+        self._job_module = imp.load_module("telemetry_job", modulefd, config.get("job_script"), ('.py', 'U', 1))
 
     def dump_stats(self, partitions):
         total = sum(partitions)
@@ -160,7 +163,8 @@ class Job:
                     # TODO: Bail, since results will be unreliable?
                 p = Process(
                         target=Mapper,
-                        args=(i, partitions[i], self._work_dir, self._job_module, self._num_reducers))
+                        name=("Mapper-%d" % i),
+                        args=(i, self._profile, partitions[i], self._work_dir, self._job_module, self._num_reducers))
                 mappers.append(p)
                 p.start()
             else:
@@ -173,7 +177,8 @@ class Job:
         for i in range(self._num_reducers):
             p = Process(
                     target=Reducer,
-                    args=(i, self._work_dir, self._job_module, self._num_mappers))
+                    name=("Reducer-%d" % i),
+                    args=(i, self._profile, self._work_dir, self._job_module, self._num_mappers))
             reducers.append(p)
             p.start()
         for r in reducers:
@@ -335,10 +340,22 @@ class TextContext(Context):
 
 
 class Mapper:
-    def __init__(self, mapper_id, inputs, work_dir, module, partition_count):
+    def __init__(self, mapper_id, do_profile, inputs, work_dir, module, partition_count):
+        if do_profile:
+            profile_out = os.path.join(work_dir, "profile_mapper_" + str(mapper_id))
+            pr = cProfile.Profile()
+            pr.enable()
+
+        self.run_mapper(mapper_id, inputs, work_dir, module, partition_count)
+
+        if do_profile:
+            pr.disable()
+            pr.dump_stats(profile_out)
+
+    def run_mapper(self, mapper_id, inputs, work_dir, module, partition_count):
         self.work_dir = work_dir
 
-        print "I am mapper", mapper_id, ", and I'm mapping", len(inputs), "inputs:", inputs
+        print "I am mapper", mapper_id, ", and I'm mapping", len(inputs), "inputs"
         output_file = os.path.join(work_dir, "mapper_" + str(mapper_id))
         mapfunc = getattr(module, 'map', None)
         context = Context(output_file, partition_count)
@@ -411,8 +428,20 @@ class Collector(dict):
 
 
 class Reducer:
+    def __init__(self, reducer_id, do_profile, work_dir, module, mapper_count):
+        if do_profile:
+            profile_out = os.path.join(work_dir, "profile_reducer_" + str(reducer_id))
+            pr = cProfile.Profile()
+            pr.enable()
+
+        self.run_reducer(reducer_id, work_dir, module, mapper_count)
+
+        if do_profile:
+            pr.disable()
+            pr.dump_stats(profile_out)
+
     COMBINE_SIZE = 50
-    def __init__(self, reducer_id, work_dir, module, mapper_count):
+    def run_reducer(self, reducer_id, work_dir, module, mapper_count):
         #print "I am reducer", reducer_id, ", and I'm reducing", mapper_count, "mapped files"
         output_file = os.path.join(work_dir, "reducer_" + str(reducer_id))
         context = TextContext(output_file)
@@ -456,6 +485,7 @@ def main():
     #TODO: make the input filter optional, default to "everything valid" and generate dims intelligently.
     parser.add_argument("-f", "--input-filter", help="File containing filter spec", required=True)
     parser.add_argument("-v", "--verbose", help="Print verbose output", action="store_true")
+    parser.add_argument("-p", "--profile", help="Profile mappers and reducers using cProfile", action="store_true")
     args = parser.parse_args()
 
     if not args.local_only:
@@ -471,6 +501,7 @@ def main():
                 parser.print_help()
                 return -1
 
+    args = args.__dict__                
     job = Job(args)
     start = datetime.now()
     exit_code = 0
