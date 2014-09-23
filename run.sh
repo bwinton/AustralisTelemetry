@@ -60,6 +60,6 @@ while [[ $1 ]]; do
 done
 
 if $VERBOSE; then
-  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
+  echo python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v2"
 fi
-python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v1"
+python -m mapreduce.job ../$MAPREDUCE.py --input-filter ../$FILTER.json --num-mappers 16 --num-reducers 4 --data-dir ../work/cache --work-dir ../work --output ../$OUTPUT $KEY $SECRET $PULL --bucket "telemetry-published-v2"
