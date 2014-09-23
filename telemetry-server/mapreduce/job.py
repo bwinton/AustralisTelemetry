@@ -16,25 +16,21 @@ import errno
 from datetime import datetime
 from multiprocessing import Process
 from telemetry.telemetry_schema import TelemetrySchema
-from telemetry.persist import StorageLayout
+from telemetry.util.compress import CompressedFile
 import telemetry.util.s3 as s3util
 import telemetry.util.timer as timer
 import subprocess
 from subprocess import Popen, PIPE
+import csv
 import signal
 import cProfile
+import collections
+import gc
 try:
     from boto.s3.connection import S3Connection
     BOTO_AVAILABLE=True
 except ImportError:
     BOTO_AVAILABLE=False
-
-def find_min_idx(stuff):
-    min_idx = 0
-    for m in range(1, len(stuff)):
-        if stuff[m] < stuff[min_idx]:
-            min_idx = m
-    return min_idx
 
 
 class Job:
@@ -68,7 +64,8 @@ class Job:
         if self._input_dir[-1] == os.path.sep:
             self._input_dir = self._input_dir[0:-1]
         self._work_dir = config.get("work_dir")
-        self._input_filter = TelemetrySchema(json.load(open(config.get("input_filter"))))
+        with open(config.get("input_filter")) as filter_file:
+            self._input_filter = TelemetrySchema(json.load(filter_file))
         self._allowed_values = self._input_filter.sanitize_allowed_values()
         self._output_file = config.get("output")
         self._num_mappers = config.get("num_mappers")
@@ -78,11 +75,13 @@ class Job:
         self._aws_key = config.get("aws_key")
         self._aws_secret_key = config.get("aws_secret_key")
         self._profile = config.get("profile")
-        modulefd = open(config.get("job_script"))
-        # let the job script import additional modules under its path
-        sys.path.append(os.path.dirname(config.get("job_script")))
-        ## Lifted from FileDriver.py in jydoop.
-        self._job_module = imp.load_module("telemetry_job", modulefd, config.get("job_script"), ('.py', 'U', 1))
+        self._delete_data = config.get("delete_data")
+        with open(config.get("job_script")) as modulefd:
+            # let the job script import additional modules under its path
+            sys.path.append(os.path.dirname(config.get("job_script")))
+            ## Lifted from FileDriver.py in jydoop.
+            self._job_module = imp.load_module(
+                "telemetry_job", modulefd, config.get("job_script"), ('.py', 'U', 1))
 
     def dump_stats(self, partitions):
         total = sum(partitions)
@@ -92,12 +91,10 @@ class Job:
 
     def fetch_remotes(self, remotes):
         # TODO: fetch remotes inside Mappers, and process each one as it becomes available.
-        remote_names = [ r["name"] for r in remotes if r["type"] == "remote" ]
+        remote_names = ( r.name for r in remotes if r.remote )
 
         # TODO: check cache first.
         result = 0
-        if len(remote_names) == 0:
-            return result
 
         fetch_cwd = os.path.join(self._work_dir, "cache")
         if not os.path.isdir(fetch_cwd):
@@ -118,11 +115,12 @@ class Job:
         return result
 
     def dedupe_remotes(self, remote_files, local_files):
-        return [ r for r in remote_files if os.path.join(self._input_dir, r.name) not in local_files ]
+        return ( r for r in remote_files
+                   if os.path.join(self._input_dir, r.name) not in local_files )
 
     def mapreduce(self):
         # Find files matching specified input filter
-        files = self.get_filtered_files(self._input_dir)
+        files = set(self.get_filtered_files(self._input_dir))
         remote_files = self.get_filtered_files_s3()
 
         # If we're using the cache dir as the data dir, we will end up reading
@@ -130,41 +128,56 @@ class Job:
         # that exist in the data dir.
         remote_files = self.dedupe_remotes(remote_files, files)
 
-        file_count = len(files) + len(remote_files)
-
-        if file_count == 0:
-            print "Filter didn't match any files... nothing to do"
-            return
-
-        # Not useful to have more mappers than input files.
-        if file_count < self._num_mappers:
-            print "Filter matched only %s input files (%s local in %s and %s " \
-                  "remote from %s). Reducing number of mappers accordingly." \
-                  % (file_count, len(files), self._input_dir, len(remote_files),
-                      self._bucket_name)
-            self._num_mappers = file_count
-
         # Partition files into reasonably equal groups for use by mappers
         print "Partitioning input data..."
         partitions = self.partition(files, remote_files)
         print "Done"
+
+        if not any(part for part in partitions):
+             print "Filter didn't match any files... nothing to do"
+             return
+
+        partitions = [part for part in partitions if part]
+
+        # Not useful to have more mappers than partitions.
+        if len(partitions) < self._num_mappers:
+            print "Filter matched only %d input files (%d local in %s and %d " \
+                  "remote from %s). Reducing number of mappers accordingly." % (
+                  len(partitions), len(files), self._input_dir,
+                  sum(len(part) for part in partitions) - len(files),
+                  self._bucket_name)
+            self._num_mappers = len(partitions)
+
+        # Free up our set of names. We want to minimize
+        # our memory usage prior to forking map jobs.
+        files = None
+        gc.collect()
+
+        def checkExitCode(proc):
+            # If process was terminated by a signal, exitcode is the negative signal value
+            if proc.exitcode == -signal.SIGKILL:
+                # SIGKILL is most likely an OOM kill
+                raise MemoryError("%s ran out of memory" % proc.name)
+            elif proc.exitcode:
+                raise OSError("%s exited with code %d" % (proc.name, proc.exitcode))
 
         # Partitions are ready. Map.
         mappers = []
         for i in range(self._num_mappers):
             if len(partitions[i]) > 0:
                 # Fetch the files we need for each mapper
-                print "Fetching remotes for partition", i
-                fetch_result = self.fetch_remotes(partitions[i])
-                if fetch_result == 0:
-                    print "Remote files fetched successfully"
-                else:
-                    print "ERROR: Failed to fetch", fetch_result, "files."
-                    # TODO: Bail, since results will be unreliable?
+                if not self._local_only:
+                    print "Fetching remotes for partition", i
+                    fetch_result = self.fetch_remotes(partitions[i])
+                    if fetch_result == 0:
+                        print "Remote files fetched successfully"
+                    else:
+                        print "ERROR: Failed to fetch", fetch_result, "files."
+                        # TODO: Bail, since results will be unreliable?
                 p = Process(
                         target=Mapper,
                         name=("Mapper-%d" % i),
-                        args=(i, self._profile, partitions[i], self._work_dir, self._job_module, self._num_reducers))
+                        args=(i, self._profile, partitions[i], self._work_dir, self._job_module, self._num_reducers, self._delete_data))
                 mappers.append(p)
                 p.start()
             else:
@@ -199,14 +212,13 @@ class Job:
         # TODO: If _output_file ends with a compressed suffix (.gz, .xz, .bz2, etc),
         #       try to compress it after writing.
         if self._num_reducers > to_combine:
-            out = open(self._output_file, "a")
-            for i in range(to_combine, self._num_reducers):
-                # FIXME: this reads the entire reducer output into memory
-                reducer_filename = os.path.join(self._work_dir, "reducer_" + str(i))
-                reducer_output = open(reducer_filename, "r")
-                out.write(reducer_output.read())
-                reducer_output.close()
-                os.remove(reducer_filename)
+            with open(self._output_file, "a") as out:
+                for i in range(to_combine, self._num_reducers):
+                    # FIXME: this reads the entire reducer output into memory
+                    reducer_filename = os.path.join(self._work_dir, "reducer_" + str(i))
+                    with open(reducer_filename, "r") as reducer_output:
+                        out.write(reducer_output.read())
+                    os.remove(reducer_filename)
 
         # TODO: clean up downloaded files?
 
@@ -219,34 +231,46 @@ class Job:
                 else:
                     print "Warning: Could not find", mfile
 
+    MapperInput = collections.namedtuple('MapperInput',
+        ('remote', 'name', 'size', 'dimensions'))
+
     # Split up the input files into groups of approximately-equal on-disk size.
     def partition(self, files, remote_files):
-        namesize = [ { "type": "local", "name": files[i], "size": os.stat(files[i]).st_size, "dimensions": self._input_filter.get_dimensions(self._input_dir, files[i]) } for i in range(0, len(files)) ]
-        partitions = []
-        sums = []
-        for p in range(self._num_mappers):
-            partitions.append([])
-            sums.append(0)
+        namesize = ( self.MapperInput(
+            remote=False,
+            name=fn,
+            size=os.stat(fn).st_size,
+            dimensions=self._input_filter.get_dimensions(self._input_dir, fn)
+        ) for fn in files )
+
+        partitions = [[] for i in range(self._num_mappers)]
+        sums = [0 for i in range(self._num_mappers)]
         min_idx = 0
 
+        def find_min_idx(stuff):
+            return min(enumerate(stuff), key=lambda x: x[1])[0]
+
         # Greedily assign the largest file to the smallest partition
-        while len(namesize) > 0:
-            current = namesize.pop()
+        for current in namesize:
             #print "putting", current, "into partition", min_idx
             partitions[min_idx].append(current)
-            sums[min_idx] += current["size"]
+            sums[min_idx] += current.size
             min_idx = find_min_idx(sums)
 
         # And now do the same with the remote files.
-        if len(remote_files) > 0:
-            for r in remote_files:
-                size = r.size
-                dims = self._input_filter.get_dimensions(".", r.name)
-                remote = {"type": "remote", "name": r.name, "size": size, "dimensions": dims}
-                #print "putting", remote, "into partition", min_idx
-                partitions[min_idx].append(remote)
-                sums[min_idx] += size
-                min_idx = find_min_idx(sums)
+        for r in remote_files:
+            size = r.size
+            dims = self._input_filter.get_dimensions(".", r.name)
+            remote = self.MapperInput(
+                remote=True,
+                name=r.name,
+                size=size,
+                dimensions=dims
+            )
+            #print "putting", remote, "into partition", min_idx
+            partitions[min_idx].append(remote)
+            sums[min_idx] += size
+            min_idx = find_min_idx(sums)
 
         # Print out some info to see how balanced the partitions were:
         self.dump_stats(sums)
@@ -254,7 +278,6 @@ class Job:
 
     def get_filtered_files(self, searchdir):
         level_offset = searchdir.count(os.path.sep)
-        out_files = []
         for root, dirs, files in os.walk(searchdir):
             level = root.count(os.path.sep) - level_offset
             dirs[:] = [i for i in dirs if self.filter_includes(level, i)]
@@ -267,11 +290,9 @@ class Job:
                         include = False
                         break
                 if include:
-                    out_files.append(full_filename)
-        return out_files
+                    yield full_filename
 
     def get_filtered_files_s3(self):
-        out_files = []
         if not self._local_only:
             print "Fetching file list from S3..."
             # Plain boto should be fast enough to list bucket contents.
@@ -287,13 +308,12 @@ class Job:
             # bucket.
             for f in s3util.list_partitions(bucket, schema=self._input_filter, include_keys=True):
                 count += 1
-                out_files.append(f)
                 if count == 1 or count % 1000 == 0:
                     print "Listed", count, "so far"
+                yield f
             conn.close()
             duration = timer.delta_sec(start)
-            print "Listed", len(out_files), "files in", duration, "seconds"
-        return out_files
+            print "Listed", count, "files in", duration, "seconds"
 
     def filter_includes(self, level, value):
         allowed_values = self._allowed_values[level]
@@ -340,19 +360,19 @@ class TextContext(Context):
 
 
 class Mapper:
-    def __init__(self, mapper_id, do_profile, inputs, work_dir, module, partition_count):
+    def __init__(self, mapper_id, do_profile, inputs, work_dir, module, partition_count, delete_files):
         if do_profile:
             profile_out = os.path.join(work_dir, "profile_mapper_" + str(mapper_id))
             pr = cProfile.Profile()
             pr.enable()
 
-        self.run_mapper(mapper_id, inputs, work_dir, module, partition_count)
+        self.run_mapper(mapper_id, inputs, work_dir, module, partition_count, delete_files)
 
         if do_profile:
             pr.disable()
             pr.dump_stats(profile_out)
 
-    def run_mapper(self, mapper_id, inputs, work_dir, module, partition_count):
+    def run_mapper(self, mapper_id, inputs, work_dir, module, partition_count, delete_files):
         self.work_dir = work_dir
 
         print "I am mapper", mapper_id, ", and I'm mapping", len(inputs), "inputs"
@@ -366,41 +386,35 @@ class Mapper:
         # TODO: Stream/decompress the files directly.
         for input_file in inputs:
             try:
-                self.open_input_file(input_file)
+                handle = self.open_input_file(input_file)
             except:
-                print "Error opening", input_file["name"], "(skipping)"
+                print "Error opening", input_file.name, "(skipping)"
                 traceback.print_exc(file=sys.stderr)
                 continue
             line_num = 0
-            for line in input_file["handle"]:
+            for line in handle:
                 line_num += 1
                 try:
-                    key, value = line.split("\t", 1)
-                    mapfunc(key, input_file["dimensions"], value, context)
+                    # Remove the trailing EOL character(s) before passing to
+                    # the map function.
+                    key, value = line.rstrip('\r\n').split("\t", 1)
+                    mapfunc(key, input_file.dimensions, value, context)
                 except ValueError, e:
                     # TODO: increment "bad line" metrics.
-                    print "Bad line:", input_file["name"], ":", line_num, e
-            input_file["handle"].close()
-            if "raw_handle" in input_file:
-                input_file["raw_handle"].close()
+                    print "Bad line:", input_file.name, ":", line_num, e
+            handle.close()
+            if delete_files:
+                print "Removing", input_file.name
+                os.remove(handle.filename)
         context.finish()
 
     def open_input_file(self, input_file):
-        filename = input_file["name"]
-        if input_file["type"] == "remote":
+        filename = input_file.name
+        if input_file.remote:
             # Read so-called remote files from the local cache. Go on the
             # assumption that they have already been downloaded.
-            filename = os.path.join(self.work_dir, "cache", input_file["name"])
-
-        if filename.endswith(StorageLayout.COMPRESSED_SUFFIX):
-            decompress_cmd = [StorageLayout.COMPRESS_PATH] + StorageLayout.DECOMPRESSION_ARGS
-            raw_handle = open(filename, "rb")
-            input_file["raw_handle"] = raw_handle
-            # Popen the decompressing version of StorageLayout.COMPRESS_PATH
-            p_decompress = Popen(decompress_cmd, bufsize=65536, stdin=raw_handle, stdout=PIPE, stderr=sys.stderr)
-            input_file["handle"] = p_decompress.stdout
-        else:
-            input_file["handle"] = open(filename, "r")
+            filename = os.path.join(self.work_dir, "cache", input_file.name)
+        return CompressedFile(filename)
 
 
 class Collector(dict):
@@ -452,19 +466,27 @@ class Reducer:
             setupreducefunc(context)
 
         if not callable(reducefunc):
-            print "No reduce function (that's ok)"
-        else:
-            collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
-            for i in range(mapper_count):
-                mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
-                # read, group by key, call reducefunc, output
-                input_fd = open(mapper_file, "rb")
+
+            print "No reduce function (that's ok). Writing out all the data."
+            map_only = True
+
+        collected = Collector(combinefunc, Reducer.COMBINE_SIZE)
+        for i in range(mapper_count):
+            mapper_file = os.path.join(work_dir, "mapper_%d_%d" % (i, reducer_id))
+            # read, group by key, call reducefunc, output
+            input_fd = open(mapper_file, "rb")
+            try:
                 while True:
-                    try:
-                        key, value = marshal.load(input_fd)
+                    key, value = marshal.load(input_fd)
+                    if map_only:
+                        # Just write out each row as we see it
+                        context.write(key, value)
+                    else:
                         collected.collect(key, value)
-                    except EOFError:
-                        break
+            except EOFError:
+                input_fd.close()
+        if not map_only:
+            # invoke the reduce function on each combined output.
             for k,v in collected.iteritems():
                 reducefunc(k, v, context)
         context.finish()
@@ -485,6 +507,7 @@ def main():
     #TODO: make the input filter optional, default to "everything valid" and generate dims intelligently.
     parser.add_argument("-f", "--input-filter", help="File containing filter spec", required=True)
     parser.add_argument("-v", "--verbose", help="Print verbose output", action="store_true")
+    parser.add_argument("-X", "--delete-data", help="Delete raw data files after mapping", action="store_true")
     parser.add_argument("-p", "--profile", help="Profile mappers and reducers using cProfile", action="store_true")
     args = parser.parse_args()
 
@@ -501,7 +524,7 @@ def main():
                 parser.print_help()
                 return -1
 
-    args = args.__dict__                
+    args = args.__dict__
     job = Job(args)
     start = datetime.now()
     exit_code = 0
