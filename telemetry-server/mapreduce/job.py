@@ -462,6 +462,7 @@ class Reducer:
         reducefunc = getattr(module, 'reduce', None)
         combinefunc = getattr(module, 'combine', None)
         setupreducefunc = getattr(module, 'setup_reduce', None)
+        map_only = False
         if callable(setupreducefunc):
             setupreducefunc(context)
 
